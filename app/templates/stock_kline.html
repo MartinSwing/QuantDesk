@@ -1,0 +1,566 @@
+{% extends "base.html" %}
+{% block head %}<script src="{{ url_for('static', filename='js/indicators.js') }}"></script>{% endblock %}
+{% block title %}{{ stock_code }} - QuantDesk{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="page-title" id="pageTitle">个股详情 · {{ stock_code }}</div>
+
+    <div style="display:flex;gap:18px;align-items:flex-start">
+        <!-- ===== 左侧导航（雪球式，点击进入详情页） ===== -->
+        <aside class="side-nav">
+            <div class="side-group">公司概况</div>
+            <a class="side-item" onclick="scrollToCard('companyCard')">公司简介</a>
+            <a class="side-item" href="/stock/{{ stock_code }}/info/managers">公司高管</a>
+            <div class="side-group">股权信息</div>
+            <a class="side-item" href="/stock/{{ stock_code }}/info/top10_holders">十大股东</a>
+            <a class="side-item" href="/stock/{{ stock_code }}/info/top10_float">十大流通股东</a>
+            <a class="side-item" href="/stock/{{ stock_code }}/info/fund_holdings">基金持股</a>
+            <a class="side-item" href="/stock/{{ stock_code }}/info/fund_flow">资金流向</a>
+            <a class="side-item" href="/stock/{{ stock_code }}/info/news">个股新闻</a>
+            <a class="side-item" href="/stock/{{ stock_code }}/info/holder_trade">高管增减持</a>
+            <a class="side-item" href="/stock/{{ stock_code }}/info/holder_number">股东人数</a>
+            <a class="side-item" href="/stock/{{ stock_code }}/info/dividend">分红送股</a>
+            <div class="side-group">公司公告</div>
+            <a class="side-item" href="/stock/{{ stock_code }}/info/announcements">最新公告</a>
+            <a class="side-item" href="/stock/{{ stock_code }}/info/annual_reports">年度报告</a>
+        </aside>
+
+        <!-- ===== 主内容 ===== -->
+        <div style="flex:1;min-width:0">
+            <!-- 行情头部（雪球风格） -->
+            <div class="card" id="quoteHeader">
+                <div class="loading">行情详情加载中...</div>
+            </div>
+
+            <!-- 走势：分时 / 日K -->
+            <div class="card">
+                <h3>走势
+                    <span style="margin-left:10px;font-weight:normal">
+                        <button class="btn btn-sm" id="tabMin" onclick="switchChart('min')">分时</button>
+                        <button class="btn btn-sm" id="tabDay" onclick="switchChart('day')">日K</button>
+                    </span>
+                    <span id="minTip" class="tip" style="display:inline;margin-left:10px"></span>
+                    <span style="margin-left:auto;float:right">
+                        <button class="btn btn-sm" onclick="toggleFav()" id="favBtn">+ 自选</button>
+                    </span>
+                </h3>
+                <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap" id="dayControls">
+                    <span style="color:#90a4ae;font-size:15px">时间段</span>
+                    <select id="daysSelect" onchange="onRangeChange()">
+                        <option value="60">近60天</option>
+                        <option value="120" selected>近120天</option>
+                        <option value="250">近一年</option>
+                        <option value="183">近半年</option>
+                        <option value="1095">近3年</option>
+                        <option value="1825">近5年</option>
+                        <option value="custom">自定义</option>
+                    </select>
+                    <span id="customRange" style="display:none;gap:6px;align-items:center">
+                        <input type="date" id="rangeStart" onchange="loadKline()">
+                        <span style="color:#90a4ae">至</span>
+                        <input type="date" id="rangeEnd" onchange="loadKline()">
+                    </span>
+                    <span class="tip" style="display:inline" id="quoteTip"></span>
+                    <span style="margin-left:auto;color:#90a4ae;font-size:15px">副图指标</span>
+                    <select id="subSelect" onchange="renderDayChart()">
+                        <option value="amount" selected>成交额</option>
+                        <option value="volume">成交量</option>
+                        <option value="macd">MACD</option>
+                        <option value="kdj">KDJ</option>
+                        <option value="rsi">RSI</option>
+                        <option value="boll">BOLL（叠加主图）</option>
+                    </select>
+                </div>
+                <div style="display:flex;gap:14px;align-items:stretch">
+                    <div id="klineChart" style="height:420px;flex:1;min-width:0"></div>
+                    <div id="bidAskPanel" style="width:200px;display:none;font-size:14px"></div>
+                </div>
+            </div>
+
+            <!-- 价值投资指标 -->
+            <div class="card" id="valuationCard">
+                <h3>💎 价值投资指标</h3>
+                <div id="valBody">
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:center" id="valBar">
+                        <span id="valBtns" style="display:flex;gap:8px;flex-wrap:wrap"></span>
+                        <span style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                            <span style="color:#90a4ae;font-size:14px">选择日期</span>
+                            <input type="date" id="valDate" onchange="selectValDate()" style="width:auto">
+                            <button class="btn btn-sm btn-gray" id="valDateClear" onclick="clearValDate()">清除</button>
+                        </span>
+                    </div>
+                    <div id="valChart" style="height:320px"></div>
+                    <div id="valDesc" style="margin-top:10px;padding:10px 14px;background:#f5f9ff;border-radius:6px;font-size:13px;color:#455a64;line-height:1.8"></div>
+                </div>
+            </div>
+
+            <!-- 资金流向 -->
+            <div class="card" id="moneyflowCard">
+                <h3>💰 资金流向 <span class="tip" style="display:inline">近 60 日净流入（万元），主力 = 超大单 + 大单</span></h3>
+                <div style="display:flex;gap:8px;margin-bottom:8px" id="mfBtns"></div>
+                <div id="mfChart" style="height:280px"></div>
+            </div>
+
+            <!-- 公司资料 -->
+            <div class="card" id="companyCard">
+                <h3>🏢 公司资料</h3>
+                <div class="loading">加载中...</div>
+            </div>
+
+            <!-- 模拟交易 -->
+            <div class="card">
+                <h3>💰 模拟交易（以最新行情价格成交）</h3>
+                <div style="display:flex;gap:24px;flex-wrap:wrap">
+                    <div style="flex:1;min-width:260px">
+                        <div class="form-group"><label>买入数量（100的整数倍）</label>
+                            <input type="number" id="buyQty" value="100" step="100" min="100" style="width:140px"></div>
+                        <button class="btn btn-red" onclick="doTrade('buy')">买入</button>
+                        <div class="tip" id="buyTip"></div>
+                    </div>
+                    <div style="flex:1;min-width:260px">
+                        <div class="form-group"><label>卖出数量</label>
+                            <input type="number" id="sellQty" value="100" step="100" min="100" style="width:140px"></div>
+                        <button class="btn btn-green" onclick="doTrade('sell')">卖出</button>
+                        <div class="tip" id="sellTip"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const STOCK_CODE = '{{ stock_code }}';
+let klineChart = null;
+
+function fv(v, nd = 2, suffix = '') {
+    return (v === null || v === undefined) ? '--' : v.toFixed(nd) + suffix;
+}
+function pc(v) {
+    return (v === null || v === undefined) ? '--' : (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
+}
+function cls(v) { return (v === null || v === undefined) ? '' : (v >= 0 ? 'rise' : 'fall'); }
+
+/* ================= 左侧导航功能 ================= */
+function scrollToCard(id) {
+    document.getElementById(id).scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+/* ================= 走势：分时 / 日K ================= */
+let chartMode = 'day';
+let minTimer = null, bidTimer = null;
+
+function switchChart(mode) {
+    chartMode = mode;
+    $('#tabMin').css({background: mode === 'min' ? '#1e88e5' : '', color: mode === 'min' ? '#fff' : ''});
+    $('#tabDay').css({background: mode === 'day' ? '#1e88e5' : '', color: mode === 'day' ? '#fff' : ''});
+    $('#dayControls').toggle(mode === 'day');
+    $('#bidAskPanel').toggle(mode === 'min');
+    if (minTimer) { clearInterval(minTimer); minTimer = null; }
+    if (bidTimer) { clearInterval(bidTimer); bidTimer = null; }
+    if (mode === 'min') {
+        $('#klineChart').height(420);
+        if (klineChart) klineChart.resize();
+        loadIntraday(); loadBidAsk();
+        minTimer = setInterval(loadIntraday, 60000);
+        bidTimer = setInterval(loadBidAsk, 15000);
+    } else {
+        loadKline();
+    }
+}
+
+function pctVs(pre, p) { return pre ? (p / pre - 1) * 100 : 0; }
+
+function loadIntraday() {
+    $.getJSON('/api/market/intraday?code=' + STOCK_CODE).done(function(res) {
+        if (res.code !== 0) { $('#minTip').text(res.msg).css('color', '#e53935'); return; }
+        const d = res.data;
+        const pre = d.pre_close;
+        const up = (d.close != null && pre) ? d.close >= pre : true;
+        const lineColor = up ? '#e53935' : '#2e7d32';
+        $('#minTip').text(`${d.date} · 数据源：${d.source}`);
+        const pct = pre ? ((d.close - pre) / pre * 100) : 0;
+        klineChart = klineChart || echarts.init($('#klineChart')[0]);
+        klineChart.setOption({
+            tooltip: {
+                trigger: 'axis',
+                formatter: function(ps) {
+                    const p = ps[0], a = ps[1];
+                    const pv = p.value != null ? p.value : '--';
+                    const pc = pre ? ((p.value - pre) / pre * 100).toFixed(2) + '%' : '--';
+                    const col = p.value != null ? (p.value >= pre ? '#e53935' : '#2e7d32') : '#90a4ae';
+                    return `${p.axisValue}<br>价格：<b style="color:${col}">${pv}</b>（${pc}）<br>` +
+                           `均价：${a && a.value != null ? a.value : '--'}`;
+                }
+            },
+            legend: {data: ['价格', '均价'], top: 0, textStyle: {fontSize: 13}},
+            grid: {left: 55, right: 55, top: 30, bottom: 28},
+            xAxis: {type: 'category', data: d.axis,
+                    axisLabel: {interval: function(i, v) { return ['09:30', '10:30', '11:30', '14:00', '15:00'].includes(v); }, fontSize: 12},
+                    axisLine: {lineStyle: {color: '#cfd8dc'}}},
+            yAxis: {scale: true, axisLabel: {fontSize: 12},
+                    splitLine: {lineStyle: {color: '#f5f5f5'}}},
+            series: [
+                {name: '价格', type: 'line', data: d.price, showSymbol: false, connectNulls: false,
+                 lineStyle: {color: lineColor, width: 1.6}, itemStyle: {color: lineColor},
+                 markLine: pre ? {silent: true, symbol: 'none', lineStyle: {color: '#90a4ae', type: 'dashed', width: 1},
+                                  label: {formatter: '昨收 ' + pre.toFixed(2), fontSize: 11},
+                                  data: [{yAxis: pre}]} : undefined},
+                {name: '均价', type: 'line', data: d.avg, showSymbol: false, connectNulls: false,
+                 lineStyle: {color: '#f9a825', width: 1.2}, itemStyle: {color: '#f9a825'}},
+            ]
+        }, true);
+        if (pre) {
+            $('#minTip').append(` · 现价 <b style="color:${lineColor}">${fv(d.close)}（${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%）</b>`);
+        }
+    }).fail(function() { $('#minTip').text('分时加载失败').css('color', '#e53935'); });
+}
+
+function loadBidAsk() {
+    $.getJSON('/api/market/bid_ask?code=' + STOCK_CODE).done(function(res) {
+        if (res.code !== 0) { $('#bidAskPanel').html(`<div class="tip">${res.msg}</div>`); return; }
+        const d = res.data;
+        const pre = d.pre_close;
+        const col = p => p == null ? '' : (p >= pre ? 'rise' : 'fall');
+        const row = (tag, o) => `<div style="display:flex;justify-content:space-between;padding:2px 4px">
+            <span style="color:#90a4ae">${tag}</span>
+            <span class="${col(o.p)}" style="width:56px;text-align:right">${o.p != null ? o.p.toFixed(2) : '--'}</span>
+            <span style="width:56px;text-align:right;color:#78909c">${o.v != null ? o.v.toFixed(0) : '--'}</span></div>`;
+        $('#bidAskPanel').html(`
+            <div style="font-weight:bold;margin-bottom:4px">盘口五档 <span class="tip" style="display:inline;font-size:12px">${d.time.slice(-8) || ''}</span></div>
+            ${d.asks.slice().reverse().map(o => row('卖' + (d.asks.indexOf(o) + 1), o)).join('')}
+            <div style="border-top:1px solid #eceff1;margin:4px 0"></div>
+            ${d.bids.map((o, i) => row('买' + (i + 1), o)).join('')}
+            <div style="margin-top:6px;color:#90a4ae;font-size:12px">价：元 · 量：手<br>${d.source}</div>`);
+    });
+}
+
+/* ================= 行情头部 ================= */
+function loadDetail() {
+    $.getJSON('/api/market/stock_detail?code=' + STOCK_CODE).done(function(res) {
+        if (res.code !== 0) { $('#quoteHeader').html(`<div class="tip">${res.msg}</div>`); return; }
+        const d = res.data;
+        $('#pageTitle').text(`${d.stock_name} · ${fv(d.price)}（${pc(d.pct_change)}，${d.trade_date || ''}）`);
+        document.title = `${d.stock_name}(${d.stock_code}) - QuantDesk`;
+        const rising = d.change >= 0;
+        const priceColor = rising ? '#e53935' : '#2e7d32';
+        const tags = [d.industry, d.area, d.market, d.list_date ? `上市 ${d.list_date}` : '']
+            .filter(Boolean).map(t => `<span class="qtag">${t}</span>`).join('');
+
+        const stats = [
+            ['最高', fv(d.high), cls(d.high - d.pre_close)], ['最低', fv(d.low), cls(d.low - d.pre_close)],
+            ['今开', fv(d.open), cls(d.open - d.pre_close)], ['昨收', fv(d.pre_close)],
+            ['涨停', fv(d.limit_up)], ['跌停', fv(d.limit_down)],
+            ['成交量', d.volume_wan != null ? d.volume_wan.toFixed(2) + '万手' : '--', ''],
+            ['成交额', d.amount_yi != null ? d.amount_yi.toFixed(2) + '亿' : '--', ''],
+            ['换手率', d.turnover_rate != null ? d.turnover_rate.toFixed(2) + '%' : '--', ''],
+            ['振幅', d.amplitude != null ? d.amplitude.toFixed(2) + '%' : '--', ''],
+            ['市盈率(TTM)', fv(d.pe_ttm)], ['市净率', fv(d.pb)],
+            ['总市值', d.total_mv_yi != null ? d.total_mv_yi.toFixed(2) + '亿' : '--', ''],
+            ['流通市值', d.circ_mv_yi != null ? d.circ_mv_yi.toFixed(2) + '亿' : '--', ''],
+            ['总股本', d.total_share_yi != null ? d.total_share_yi.toFixed(2) + '亿股' : '--', ''],
+            ['流通股', d.float_share_yi != null ? d.float_share_yi.toFixed(2) + '亿股' : '--', ''],
+            ['股息率(TTM)', d.dv_ttm != null ? d.dv_ttm.toFixed(2) + '%' : '--', ''],
+            ['52周最高', fv(d.high_52w)], ['52周最低', fv(d.low_52w)],
+        ];
+        $('#quoteHeader').html(`
+            <div style="display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start">
+                <div style="min-width:240px">
+                    <h3 style="margin:0 0 4px">${d.stock_name} <span class="tip" style="display:inline">${d.stock_code}</span></h3>
+                    <div style="margin-bottom:8px">${tags}</div>
+                    <div style="font-size:34px;font-weight:bold;color:${priceColor}">¥ ${fv(d.price)}</div>
+                    <div style="font-size:16px;color:${priceColor};margin-top:2px">
+                        ${d.change != null ? (rising ? '+' : '') + d.change.toFixed(2) : '--'}
+                        &nbsp;${pc(d.pct_change)}
+                    </div>
+                </div>
+                <div style="flex:1;min-width:320px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px 18px">
+                    ${stats.map(([k, v, c]) => `
+                        <div style="display:flex;justify-content:space-between;border-bottom:1px dashed #eceff1;padding:3px 0">
+                            <span style="color:#90a4ae">${k}</span><span class="${c || ''}" style="font-weight:600">${v}</span>
+                        </div>`).join('')}
+                </div>
+            </div>`);
+        $('#quoteTip').text(` 数据截至 ${d.trade_date || '--'}`);
+    }).fail(function() {
+        $('#quoteHeader').html('<div class="tip">行情详情加载失败，请刷新重试</div>');
+    });
+}
+
+/* ================= 公司资料 ================= */
+function loadCompany() {
+    $.getJSON('/api/market/stock_detail?code=' + STOCK_CODE).done(function(res) {
+        if (res.code !== 0) { $('#companyCard').html('<div class="tip">暂无公司资料</div>'); return; }
+        const d = res.data;
+        if (!d.introduction && !d.main_business) {
+            $('#companyCard').html('<h3>🏢 公司资料</h3><div class="tip">暂无公司资料</div>'); return;
+        }
+        const intro = d.introduction || '';
+        const long = intro.length > 160;
+        $('#companyCard').html(`
+            <h3>🏢 公司资料</h3>
+            <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px 18px;max-width:900px;margin-bottom:10px">
+                ${[['主营业务', d.main_business], ['官网', d.website ? `<a href="https://${d.website}" target="_blank" style="color:#1e88e5">${d.website}</a>` : ''],
+                   ['董事长', d.chairman], ['员工人数', d.employees != null ? Number(d.employees).toLocaleString() + ' 人' : '']]
+                  .filter(([k, v]) => v)
+                  .map(([k, v]) => `<div style="display:flex;gap:8px"><span style="color:#90a4ae;white-space:nowrap">${k}：</span><span style="flex:1">${v}</span></div>`).join('')}
+            </div>
+            <div style="color:#546e7a;line-height:1.7">
+                <b style="color:#37474f">公司简介：</b>
+                <span id="introText">${long ? intro.slice(0, 160) + '……' : intro}</span>
+                ${long ? `<a href="javascript:void(0)" id="introToggle" style="color:#1e88e5;margin-left:6px">展开 ▾</a>` : ''}
+            </div>`);
+        if (long) {
+            $('#introToggle').on('click', function() {
+                const expanded = $(this).data('exp');
+                $('#introText').text(expanded ? intro.slice(0, 160) + '……' : intro);
+                $(this).data('exp', !expanded).text(expanded ? '展开 ▾' : '收起 ▴');
+            });
+        }
+    });
+}
+
+/* ================= K线（日K + 副图指标切换） ================= */
+let dayData = null;   // 缓存最近一次接口数据，切副图无需重新请求
+
+/* 时间区间切换：自定义时展示起止日期选择 */
+function onRangeChange() {
+    const v = $('#daysSelect').val();
+    if (v === 'custom') {
+        if (!$('#rangeStart').val()) {   // 首次切换默认填充近一年
+            const today = new Date();
+            $('#rangeStart').val(new Date(today.getTime() - 365 * 86400000).toISOString().slice(0, 10));
+            $('#rangeEnd').val(today.toISOString().slice(0, 10));
+        }
+        $('#customRange').css('display', 'inline-flex');
+    } else {
+        $('#customRange').hide();
+    }
+    loadKline();
+}
+
+function loadKline() {
+    const days = $('#daysSelect').val();
+    const payload = {code: STOCK_CODE, kind: 'stock'};
+    if (days === 'custom') {
+        const s = $('#rangeStart').val(), e = $('#rangeEnd').val();
+        if (!s || !e) return;            // 日期未选全不加载
+        payload.start_date = s;
+        payload.end_date = e;
+    } else {
+        payload.days = days;
+    }
+    $.ajax({url: '/api/market/indicators', type: 'POST', contentType: 'application/json',
+        data: JSON.stringify(payload)}).done(function(res) {
+        if (res.code !== 0 || !res.data || !res.data.kline.length) {
+            $('#quoteTip').text(res.msg || '暂无K线数据').css('color', '#e53935'); return;
+        }
+        dayData = res.data;
+        renderDayChart();
+    });
+}
+
+function renderDayChart() {
+    if (!dayData) return;
+    const data = dayData.kline, ind = dayData.indicators;
+    klineChart = klineChart || echarts.init($('#klineChart')[0]);
+    let option = {
+        tooltip: {trigger: 'axis'},
+        xAxis: {type: 'category', data: data.map(d => d.date)},
+        yAxis: [{scale: true}],
+        series: [
+            {name: 'K线', type: 'candlestick', data: data.map(d => [d.open, d.close, d.low, d.high]),
+             itemStyle: {color: '#e53935', color0: '#2e7d32', borderColor: '#e53935', borderColor0: '#2e7d32'}},
+        ]
+    };
+    option = IND.apply(option, data, ind, $('#subSelect').val(), '万手');
+    klineChart.setOption(option, true);
+    klineChart.resize();
+}
+
+function doTrade(side) {
+    const qty = side === 'buy' ? $('#buyQty').val() : $('#sellQty').val();
+    $.ajax({url: `/api/trade/${side}`, type: 'POST', contentType: 'application/json',
+        data: JSON.stringify({stock_code: STOCK_CODE, quantity: Number(qty)})}).done(function(res) {
+        $(side === 'buy' ? '#buyTip' : '#sellTip').text(res.msg)
+            .css('color', res.code === 0 ? '#2e7d32' : '#e53935');
+        if (res.code === 0 && side === 'sell') loadKline();
+    }).fail(function() {
+        $(side === 'buy' ? '#buyTip' : '#sellTip').text('请求失败，请重试').css('color', '#e53935');
+    });
+}
+
+function toggleFav() {
+    $.ajax({url: '/api/favorite/add', type: 'POST', contentType: 'application/json',
+        data: JSON.stringify({stock_code: STOCK_CODE})}).done(function(res) {
+        $('#favBtn').text(res.code === 0 ? '✓ 已加自选' : '已加自选');
+    });
+}
+
+$(function() { loadDetail(); loadCompany(); switchChart('min'); loadValuation(); loadMoneyflow(); });
+
+/* ================= 资金流向 ================= */
+let mfData = null, mfChart = null, mfKey = 'main';
+const MF_KEYS = {main: '主力', elg: '超大单', lg: '大单', md: '中单', sm: '小单'};
+
+function loadMoneyflow() {
+    $.getJSON('/api/market/moneyflow', {code: STOCK_CODE, days: 60}).done(function(res) {
+        if (res.code !== 0 || !res.data.dates || !res.data.dates.length) {
+            $('#mfChart').html('<div class="tip">暂无资金流数据</div>');
+            return;
+        }
+        mfData = res.data;
+        renderMfBtns();
+        renderMfChart();
+    }).fail(function() { $('#mfChart').html('<div class="tip">资金流加载失败</div>'); });
+}
+
+function renderMfBtns() {
+    $('#mfBtns').html(Object.keys(MF_KEYS).map(k =>
+        `<button class="btn btn-sm ${k === mfKey ? '' : 'btn-gray'}" onclick="switchMf('${k}')">${MF_KEYS[k]}</button>`
+    ).join(''));
+}
+
+function switchMf(k) { mfKey = k; renderMfBtns(); renderMfChart(); }
+
+function renderMfChart() {
+    if (!mfData) return;
+    const vals = mfData[mfKey], dates = mfData.dates;
+    mfChart = mfChart || echarts.init($('#mfChart')[0]);
+    mfChart.setOption({
+        tooltip: {trigger: 'axis', formatter: function(p) {
+            const i = p[0].dataIndex;
+            return `${dates[i]}<br/>${MF_KEYS[mfKey]}净流入：${vals[i].toLocaleString()} 万元`;
+        }},
+        grid: {left: 60, right: 20, top: 30, bottom: 40},
+        xAxis: {type: 'category', data: dates},
+        yAxis: {type: 'value', name: '万元'},
+        dataZoom: [{type: 'inside'}, {type: 'slider', height: 16, bottom: 4}],
+        series: [{type: 'bar', data: vals.map(v => ({value: v,
+            itemStyle: {color: v >= 0 ? '#e53935' : '#2e7d32'}}))}],
+    }, true);
+}
+
+/* ================= 价值投资指标 ================= */
+let valData = null, valChart = null, valKey = 'pe', valSelDate = null;
+const VAL_INFO = {
+    pe: {label: 'PE（市盈率TTM）', unit: '倍',
+         desc: '<b>含义</b>：股价 ÷ 每股收益（滚动四季），衡量按当前盈利水平多少年"回本"，是最常用的估值标尺。<b>判断</b>：低于历史 30% 分位通常视为相对低估，高于 70% 分位相对高估；注意周期股在盈利顶部 PE 反而最低（"低 PE 陷阱"），需结合行业景气度判断。'},
+    pb: {label: 'PB（市净率）', unit: '倍',
+         desc: '<b>含义</b>：股价 ÷ 每股净资产，衡量市值相对账面净资产的溢价。<b>判断</b>：适合银行、地产、制造等重资产行业；跌破 1（破净）意味着市值低于净资产，常作为安全边际参考，但需警惕资产减值、商誉暴雷导致净资产"虚高"。'},
+    dv_ratio: {label: '股息率', unit: '%',
+         desc: '<b>含义</b>：近 12 个月现金分红 ÷ 股价，衡量持有期的"现金回报率"。<b>判断</b>：长期高于 3% 通常具备吸引力；稳定且可持续的高股息是价值股的典型特征。注意甄别一次性特别分红或用未来利润预支分红的情况。'},
+    total_mv: {label: '总市值', unit: '亿元',
+         desc: '<b>含义</b>：股价 × 总股本，反映公司整体规模与市场定价。<b>判断</b>：市值越大通常波动越平缓、流动性越好；观察市值长期扩张/收缩趋势，可辅助判断市场对公司成长性或衰退预期的变化。'},
+};
+
+function loadValuation() {
+    $.getJSON('/api/market/valuation', {code: STOCK_CODE}).done(function(res) {
+        if (res.code !== 0) {
+            $('#valBody').html('<div class="tip">' + (res.msg || '暂无估值数据') + '</div>');
+            return;
+        }
+        valData = res.data;
+        // 日期选择器范围 = 数据首末交易日
+        if (valData.dates && valData.dates.length) {
+            $('#valDate').attr('min', valData.dates[0]).attr('max', valData.dates[valData.dates.length - 1]);
+        }
+        renderValBtns();
+        renderValChart();
+    }).fail(function() {
+        $('#valBody').html('<div class="tip">估值数据加载失败，请刷新重试</div>');
+    });
+}
+
+function renderValBtns() {
+    $('#valBtns').html(Object.keys(VAL_INFO).map(k =>
+        `<button class="btn btn-sm ${k === valKey ? '' : 'btn-gray'}" onclick="switchVal('${k}')">${VAL_INFO[k].label}</button>`
+    ).join(''));
+}
+
+function switchVal(k) { valKey = k; renderValBtns(); renderValChart(); }
+
+/* 选中日期 → 重绘标注；清除 → 恢复默认 */
+function selectValDate() { valSelDate = $('#valDate').val(); renderValChart(); }
+function clearValDate() { valSelDate = null; $('#valDate').val(''); renderValChart(); }
+
+/* 精确匹配日期索引；无则向前取最近交易日 */
+function findValIdx(d) {
+    let i = valData.dates.indexOf(d);
+    if (i >= 0) return i;
+    i = valData.dates.findIndex(x => x > d);
+    return i === -1 ? valData.dates.length - 1 : (i > 0 ? i - 1 : -1);
+}
+
+function renderValChart() {
+    const info = VAL_INFO[valKey];
+    const vals = valData.series[valKey] || [];
+    const cur = valData.current[valKey];
+    const pct = valData.percentile[valKey];
+    const valid = vals.filter(v => v !== null);
+    const mean = valid.length ? valid.reduce((a, b) => a + b, 0) / valid.length : null;
+
+    // 分位评估标签
+    let evalTag, evalColor;
+    if (valKey === 'dv_ratio') {   // 股息率反向：越高越有吸引力
+        evalTag = pct >= 70 ? '历史高位（现金回报丰厚）' : pct <= 30 ? '历史低位' : '历史中位';
+        evalColor = pct >= 70 ? '#e53935' : pct <= 30 ? '#2e7d32' : '#f9a825';
+    } else {
+        evalTag = pct <= 30 ? '相对低估区' : pct >= 70 ? '相对高估区' : '合理区间';
+        evalColor = pct <= 30 ? '#2e7d32' : pct >= 70 ? '#e53935' : '#f9a825';
+    }
+
+    // 选中日期的数据点标注（markPoint）
+    let markPoint = null, selDate = null, selVal = null;
+    if (valSelDate) {
+        const idx = findValIdx(valSelDate);
+        if (idx >= 0 && vals[idx] != null) {
+            selDate = valData.dates[idx];
+            selVal = vals[idx];
+            markPoint = {
+                symbol: 'pin', symbolSize: 46,
+                itemStyle: {color: '#e53935'},
+                label: {formatter: '{c}', position: 'top', fontWeight: 'bold'},
+                data: [{coord: [idx, selVal], value: selVal}],
+            };
+        }
+    }
+
+    valChart = valChart || echarts.init($('#valChart')[0]);
+    valChart.setOption({
+        tooltip: {trigger: 'axis'},
+        grid: {left: 60, right: 30, top: 40, bottom: 40},
+        xAxis: {type: 'category', data: valData.dates},
+        yAxis: {type: 'value', scale: true, name: info.unit},
+        dataZoom: [{type: 'inside'}],
+        series: [{
+            name: info.label, type: 'line', data: vals, showSymbol: false,
+            lineStyle: {width: 2, color: '#1e88e5'}, itemStyle: {color: '#1e88e5'},
+            areaStyle: {opacity: 0.08},
+            markPoint: markPoint,
+            markLine: mean ? {silent: true, symbol: 'none', lineStyle: {type: 'dashed', color: '#f9a825'},
+                label: {formatter: '均值 ' + mean.toFixed(1)}, data: [{yAxis: +mean.toFixed(2)}]} : null,
+        }],
+    }, true);
+
+    // 所选日期四指标一览
+    let selRow = '';
+    if (selDate != null) {
+        const idx = findValIdx(selDate);
+        const s = valData.series;
+        const fmt = (k, d) => (idx >= 0 && s[k][idx] != null ? s[k][idx].toFixed(d) : '--');
+        selRow = `<div style="margin-bottom:6px">📅 <b>${selDate}</b> 当日：PE(TTM) <b>${fmt('pe', 1)}</b> 倍
+            ｜ PB <b>${fmt('pb', 2)}</b> 倍
+            ｜ 股息率 <b>${fmt('dv_ratio', 2)}</b>%
+            ｜ 总市值 <b>${fmt('total_mv', 0)}</b> 亿元</div>`;
+    }
+
+    $('#valDesc').html(`
+        ${selRow}
+        <div style="margin-bottom:6px">当前值 <b style="font-size:16px;color:#1e88e5">${cur == null ? '--' : cur.toLocaleString('zh-CN')}</b> ${info.unit}
+            ｜ 处于近 2 年 <b style="color:${evalColor}">${pct == null ? '--' : pct + '%'} 分位（${evalTag}）</b>
+            ｜ 历史均值 ${mean == null ? '--' : mean.toFixed(1)} ${info.unit}</div>
+        <div>${info.desc}</div>`);
+}
+</script>
+{% endblock %}

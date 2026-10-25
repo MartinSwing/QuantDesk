@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}港股 - QuantDesk{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="page-title">港股行情 <span class="tip">数据来源 akshare · 点击个股查看K线</span></div>
+
+    <div class="card" style="margin-bottom:14px">
+        <h3>🇭🇰 港股实时行情</h3>
+        <div id="hkTable"><div class="loading">加载中...</div></div>
+    </div>
+
+    <div class="card" id="hkKlineCard" style="display:none">
+        <h3 id="hkKlineTitle">港股K线</h3>
+        <div id="hkChart" style="height:400px"></div>
+    </div>
+</div>
+
+<script>
+let hkChart = null, hkList = [];
+
+function loadHkList() {
+    $.getJSON('/api/market/hk_list').done(function(res) {
+        if (res.code !== 0) { $('#hkTable').html(`<div class="tip" style="color:#e53935">${res.msg}</div>`); return; }
+        hkList = res.data;
+        const pct = v => v == null ? '--' : `<span class="${v >= 0 ? 'rise' : 'fall'}">${v >= 0 ? '+' : ''}${v.toFixed(2)}%</span>`;
+        $('#hkTable').html(`<table style="width:100%;border-collapse:collapse;font-size:14px">
+            <thead><tr style="background:#f5f7f9">
+                <th style="padding:8px 10px;text-align:left">代码</th><th style="padding:8px 10px;text-align:left">名称</th>
+                <th style="padding:8px 10px;text-align:right">现价</th><th style="padding:8px 10px;text-align:right">涨跌幅</th>
+                <th style="padding:8px 10px;text-align:right">最高</th><th style="padding:8px 10px;text-align:right">最低</th></tr></thead>
+            <tbody>${hkList.map(h => `<tr style="cursor:pointer;border-bottom:1px solid #f5f5f5" onclick="showHkKline('${h.code}','${h.name}')"
+                onmouseover="this.style.background='#f5f9ff'" onmouseout="this.style.background=''">
+                <td style="padding:8px 10px;font-weight:bold">${h.code}</td><td style="padding:8px 10px">${h.name}</td>
+                <td style="padding:8px 10px;text-align:right">${h.price ?? '--'}</td><td style="padding:8px 10px;text-align:right">${pct(h.pct)}</td>
+                <td style="padding:8px 10px;text-align:right">${h.high ?? '--'}</td><td style="padding:8px 10px;text-align:right">${h.low ?? '--'}</td></tr>`).join('')}</tbody></table>`);
+    }).fail(function() { $('#hkTable').html('<div class="tip">加载失败，请刷新重试</div>'); });
+}
+
+function showHkKline(code, name) {
+    $('#hkKlineCard').show();
+    $('#hkKlineTitle').text(`🇭🇰 ${name}（${code}）日K`);
+    $('#hkChart').html('<div class="loading">加载中...</div>');
+    $.getJSON('/api/market/hk_kline', {symbol: code, days: 250}).done(function(res) {
+        if (res.code !== 0) { $('#hkChart').html(`<div class="tip">${res.msg}</div>`); return; }
+        const k = res.data;
+        hkChart = hkChart || echarts.init($('#hkChart')[0]);
+        hkChart.setOption({
+            tooltip: {trigger: 'axis'},
+            grid: {left: 60, right: 30, top: 30, bottom: 60},
+            xAxis: {type: 'category', data: k.map(x => x.date)},
+            yAxis: {type: 'value', scale: true},
+            dataZoom: [{type: 'inside'}, {type: 'slider', height: 20, bottom: 8}],
+            series: [{type: 'candlestick',
+                data: k.map(x => [x.open, x.close, x.low, x.high]),
+                itemStyle: {color: '#e53935', color0: '#2e7d32', borderColor: '#e53935', borderColor0: '#2e7d32'}}],
+        }, true);
+        document.getElementById('hkKlineCard').scrollIntoView({behavior: 'smooth'});
+    }).fail(function() { $('#hkChart').html('<div class="tip">加载失败</div>'); });
+}
+
+$(function() { loadHkList(); $(window).on('resize', () => hkChart && hkChart.resize()); });
+</script>
+{% endblock %}

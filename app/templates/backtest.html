@@ -1,0 +1,414 @@
+{% extends "base.html" %}
+{% block title %}策略回测 - QuantDesk{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="page-title">策略回测 · 经典策略历史模拟</div>
+
+    <!-- 市场状态标签 -->
+    <div class="card" style="margin-bottom:18px;display:flex;gap:20px;flex-wrap:wrap;align-items:center" id="regimeCard">
+        <span class="loading">市场状态识别中...</span>
+    </div>
+
+    <!-- 回测表单 -->
+    <div class="card" style="margin-bottom:18px">
+        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">
+            <div class="form-group" style="width:230px;position:relative">
+                <label>股票代码</label>
+                <input type="text" id="btCode" placeholder="600000.SH" autocomplete="off">
+                <div id="btSearchTip" style="position:absolute;z-index:99;background:#fff;border:1px solid #cfd8dc;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.1);display:none;max-height:240px;overflow:auto;width:100%"></div>
+            </div>
+            <div class="form-group" style="width:180px">
+                <label>回测策略</label>
+                <select id="btStrategy"></select>
+            </div>
+            <div id="btParamBox" style="display:flex;gap:14px"></div>
+            <div class="form-group" style="width:150px">
+                <label>开始日期</label>
+                <input type="date" id="btStart">
+            </div>
+            <div class="form-group" style="width:150px">
+                <label>结束日期</label>
+                <input type="date" id="btEnd">
+            </div>
+            <div class="form-group" style="width:150px">
+                <label>初始资金（元）</label>
+                <input type="number" id="btCapital" value="100000" min="10000" max="10000000" step="10000">
+            </div>
+            <button class="btn btn-red" id="btRun" style="height:38px">开始回测</button>
+        </div>
+        <div class="tip" style="margin-top:8px">撮合口径：T 日收盘计算信号，T+1 日开盘价成交；全仓进出，佣金万2.5（最低5元）+ 印花税万5（卖出）；区间结束持仓按收盘价估值。</div>
+    </div>
+
+    <!-- 结果区 -->
+    <div id="btResult" style="display:none">
+        <div id="btCards" style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:18px"></div>
+
+        <div class="card" style="margin-bottom:18px">
+            <h3>累计收益率对比 <span class="tip" style="display:inline" id="btBenchTip"></span></h3>
+            <div id="btChart" style="height:440px"></div>
+        </div>
+
+        <div class="card">
+            <h3>交易明细 <span class="tip" style="display:inline" id="btTradeTip"></span></h3>
+            <div style="max-height:360px;overflow:auto">
+                <table class="styled-table" id="btTradeTable" style="width:100%">
+                    <thead><tr>
+                        <th>日期</th><th>方向</th><th>价格</th><th>数量</th>
+                        <th>金额</th><th>佣金</th><th>印花税</th>
+                    </tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div id="btEmpty" class="card" style="margin-top:18px"><div class="empty-tip">选择股票与策略后点击「开始回测」查看结果</div></div>
+
+    <!-- 策略横向对比 -->
+    <div class="card" style="margin-top:18px">
+        <h3>策略横向对比 <span class="tip" style="display:inline">同一标的/区间，多策略一键对比</span></h3>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px" id="cmpStrategyBox"></div>
+        <button class="btn" id="cmpRun">对比所选策略</button>
+        <div id="cmpChart" style="height:320px;margin-top:12px;display:none"></div>
+        <div id="cmpTable" style="margin-top:12px;display:none"></div>
+    </div>
+
+    <!-- 参数寻优热力图 -->
+    <div class="card" style="margin-top:18px">
+        <h3>参数寻优热力图 <span class="tip" style="display:inline">网格搜索前两个参数，颜色越红该指标越优</span></h3>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
+            <div class="form-group" style="width:190px"><label>策略</label><select id="optStrategy"></select></div>
+            <div class="form-group" style="width:180px"><label>评估指标</label><select id="optMetric">
+                <option value="return_pct">总收益 %</option>
+                <option value="annualized_pct">年化收益 %</option>
+                <option value="excess_pct">超额收益 %</option>
+                <option value="max_drawdown_pct">最大回撤 %</option>
+                <option value="sharpe">夏普比率</option>
+                <option value="win_rate_pct">胜率 %</option>
+            </select></div>
+            <div class="form-group" style="width:130px"><label>网格密度</label><select id="optPoints">
+                <option value="4">4×4</option><option value="6" selected>6×6</option><option value="8">8×8</option>
+            </select></div>
+            <button class="btn" id="optRun" style="height:38px">开始寻优</button>
+        </div>
+        <div class="tip">寻优沿用上方表单的股票代码与日期区间（约数秒）。MACD/KDJ 参数固定，无法寻优。</div>
+        <div id="optChart" style="height:420px;margin-top:12px;display:none"></div>
+    </div>
+</div>
+
+<style>
+.styled-table { border-collapse: collapse; }
+.styled-table th, .styled-table td { padding: 8px 14px; border-bottom: 1px solid #eceff1; text-align: left; white-space: nowrap; }
+.styled-table thead th { background: #f5f7f9; position: sticky; top: 0; }
+.search-row { padding: 7px 12px; cursor: pointer; display: flex; justify-content: space-between; gap: 12px; }
+.search-row:hover { background: #e3f2fd; }
+</style>
+
+<script>
+let btChart = null;
+let btMeta = [];
+const fmtPct = v => (v == null ? '--' : (v >= 0 ? '+' : '') + v.toFixed(2) + '%');
+const cls = v => v >= 0 ? 'rise' : 'fall';
+
+// ---------- 初始化：默认区间（近2年）、策略下拉 ----------
+$(function() {
+    const today = new Date();
+    const start = new Date(today.getTime() - 2 * 365 * 86400000);
+    const fmt = d => d.toISOString().slice(0, 10);
+    $('#btStart').val(fmt(start));
+    $('#btEnd').val(fmt(today));
+
+    $.getJSON('/api/backtest/strategies').done(function(res) {
+        if (res.code !== 0) return;
+        btMeta = res.data;
+        const opts = btMeta.map(s => `<option value="${s.key}">${s.label}</option>`).join('');
+        $('#btStrategy').html(opts);
+        $('#optStrategy').html(opts);
+        // 对比勾选：默认全选（MACD/KDJ 无参数也参与对比）
+        $('#cmpStrategyBox').html(btMeta.map(s => `
+            <label style="display:inline-flex;align-items:center;gap:5px;font-size:15px;cursor:pointer">
+                <input type="checkbox" class="cmp-check" value="${s.key}" checked style="width:auto">${s.label}
+            </label>`).join(''));
+        renderParams();
+    });
+    $('#btStrategy').on('change', renderParams);
+    $('#btRun').on('click', runBacktest);
+    $('#cmpRun').on('click', runCompare);
+    $('#optRun').on('click', runOptimize);
+    loadRegime();
+    $(window).on('resize', () => { btChart && btChart.resize(); cmpChart && cmpChart.resize(); optChart && optChart.resize(); });
+});
+
+// 参数中文标签（全站策略统一）
+const PARAM_LABELS = {
+    short: '短均线(日)', long: '长均线(日)',
+    n: '周期(日)', k: '带宽(σ)',
+    entry_n: '入场突破(日)', exit_n: '出场跌破(日)',
+    buy_th: '买入阈值(%)', sell_th: '卖出阈值(%)',
+    grid_pct: '网格间距(%)', levels: '网格数(份)',
+};
+
+function renderParams() {
+    const s = btMeta.find(x => x.key === $('#btStrategy').val());
+    $('#btParamBox').html((s ? s.params : []).map(p => `
+        <div class="form-group" style="width:140px">
+            <label>${PARAM_LABELS[p.name] || p.name} ${p.min}~${p.max}</label>
+            <input type="number" class="bt-param" data-name="${p.name}" value="${p.default}"
+                   min="${p.min}" max="${p.max}" step="${Number.isInteger(p.default) ? 1 : 0.1}">
+        </div>`).join(''));
+}
+
+// ---------- 股票搜索联想 ----------
+$('#btCode').on('input', function() {
+    const kw = $(this).val().trim();
+    if (!kw) { $('#btSearchTip').hide(); return; }
+    $.getJSON('/api/market/search', {q: kw}).done(function(res) {
+        const rows = (res.data || []).slice(0, 8);
+        if (!rows.length) { $('#btSearchTip').hide(); return; }
+        $('#btSearchTip').html(rows.map(r =>
+            `<div class="search-row" data-code="${r.ts_code}"><span>${r.ts_code}</span><span>${r.name || ''}</span></div>`
+        ).join('')).show();
+    });
+});
+$('#btSearchTip').on('click', '.search-row', function() {
+    $('#btCode').val($(this).data('code'));
+    $('#btSearchTip').hide();
+});
+$(document).on('click', e => { if (!$(e.target).closest('#btCode, #btSearchTip').length) $('#btSearchTip').hide(); });
+
+// ---------- 执行回测 ----------
+function runBacktest() {
+    const code = $('#btCode').val().trim().toUpperCase();
+    if (!code) { alert('请输入股票代码（如 600000.SH）'); return; }
+    const payload = {
+        stock_code: code,
+        strategy: $('#btStrategy').val(),
+        params: {},
+        start_date: $('#btStart').val(),
+        end_date: $('#btEnd').val(),
+        initial_capital: parseInt($('#btCapital').val(), 10) || 100000,
+    };
+    $('.bt-param').each(function() { payload.params[$(this).data('name')] = parseFloat($(this).val()); });
+
+    const $btn = $('#btRun').prop('disabled', true).text('回测中...');
+    $('#btEmpty').html('<div class="empty-tip">正在计算，请稍候...</div>').show();
+    $('#btResult').hide();
+
+    $.ajax({url: '/api/backtest/run', method: 'POST', contentType: 'application/json',
+            data: JSON.stringify(payload)})
+    .done(function(res) {
+        if (res.code !== 0) { alert(res.msg || '回测失败'); $('#btEmpty').html('<div class="empty-tip">' + (res.msg || '回测失败') + '</div>').show(); return; }
+        render(res.data);
+    })
+    .fail(function(xhr) {
+        const msg = (xhr.responseJSON && xhr.responseJSON.msg) || '请求失败，请稍后重试';
+        $('#btEmpty').html('<div class="empty-tip">' + msg + '</div>').show();
+    })
+    .always(function() { $btn.prop('disabled', false).text('开始回测'); });
+}
+
+function render(data) {
+    $('#btEmpty').hide();
+    $('#btResult').show();
+    const s = data.summary, pts = data.points;
+
+    // 指标卡片
+    const card = (label, val, c, small) => `<div class="card" style="flex:1;min-width:140px">
+        <div style="color:#78909c">${label}</div>
+        <div style="font-weight:bold;margin-top:6px;${small ? 'font-size:15px' : 'font-size:22px'}" class="${c || ''}">${val}</div></div>`;
+    $('#btCards').html([
+        card('策略总收益', fmtPct(s.return_pct), cls(s.return_pct)),
+        card('年化收益', fmtPct(s.annualized_pct), cls(s.annualized_pct)),
+        card('沪深300 同期', fmtPct(s.benchmark_pct), cls(s.benchmark_pct)),
+        card('超额收益', fmtPct(s.excess_pct), s.excess_pct == null ? '' : cls(s.excess_pct)),
+        card('最大回撤', s.max_drawdown_pct.toFixed(2) + '%', 'fall'),
+        card('夏普比率', s.sharpe == null ? '--' : s.sharpe, cls(s.sharpe)),
+        card('胜率', s.win_rate_pct == null ? '--' : s.win_rate_pct.toFixed(1) + '%', ''),
+        card('交易次数', s.trade_count + ' 次', ''),
+        card('平均持仓', s.avg_hold_days == null ? '--' : s.avg_hold_days + ' 天', '', true),
+        card('期末资产', '¥' + s.final_asset.toLocaleString('zh-CN', {minimumFractionDigits: 2}), '', true),
+    ].join(''));
+
+    // 买卖点标记（scatter 的 data item 须用 value:[x,y]；coord 是 markPoint 专用语法）
+    const dateIdx = {};
+    pts.forEach((p, i) => dateIdx[p.date] = i);
+    const buys = [], sells = [];
+    data.trades.forEach(t => {
+        const i = dateIdx[t.date];
+        if (i == null) return;
+        (t.side === 'buy' ? buys : sells).push({value: [i, pts[i].return_pct], price: t.price});
+    });
+
+    $('#btBenchTip').text(data.benchmark ? `（基准：${data.benchmark}，红▲买入 绿▼卖出，T+1 开盘成交）` : '（基准数据暂缺）');
+
+    btChart = btChart || echarts.init($('#btChart')[0]);
+    btChart.setOption({
+        tooltip: {trigger: 'axis', formatter: function(params) {
+            const i = params[0].dataIndex;
+            let html = `${pts[i].date}<br/>总资产：¥${Number(pts[i].asset).toLocaleString('zh-CN')}`;
+            params.forEach(p => { if (p.seriesType === 'line') html += `<br/>${p.marker}${p.seriesName}：${fmtPct(p.value)}`; });
+            return html;
+        }},
+        legend: {top: 2},
+        grid: {left: 60, right: 30, top: 40, bottom: 60},
+        xAxis: {type: 'category', data: pts.map(p => p.date)},
+        yAxis: {type: 'value', axisLabel: {formatter: '{value}%'}},
+        dataZoom: [{type: 'inside'}, {type: 'slider', height: 20, bottom: 8}],
+        series: [
+            {name: '策略收益', type: 'line', data: pts.map(p => p.return_pct), showSymbol: false,
+             lineStyle: {width: 2.5, color: '#e53935'}, itemStyle: {color: '#e53935'}, areaStyle: {opacity: 0.06}},
+            {name: '沪深300', type: 'line', data: pts.map(p => p.benchmark_pct), showSymbol: false,
+             lineStyle: {width: 1.8, type: 'dashed', color: '#1e88e5'}, itemStyle: {color: '#1e88e5'}},
+            {name: '买入', type: 'scatter', data: buys, symbol: 'triangle', symbolSize: 13, z: 5,
+             itemStyle: {color: '#e53935'},
+             tooltip: {formatter: p => `买入 @ ¥${p.data.price}`}},
+            {name: '卖出', type: 'scatter', data: sells, symbol: 'triangle', symbolRotate: 180, symbolSize: 13, z: 5,
+             itemStyle: {color: '#43a047'},
+             tooltip: {formatter: p => `卖出 @ ¥${p.data.price}`}},
+        ]
+    }, true);
+
+    // 交易明细
+    $('#btTradeTip').text(s.open_position ? `（区间结束仍持仓，期末资产按最后收盘价估值）` : '');
+    $('#btTradeTable tbody').html(data.trades.length ? data.trades.map(t => `
+        <tr>
+            <td>${t.date}</td>
+            <td class="${t.side === 'buy' ? 'rise' : 'fall'}" style="font-weight:bold">${t.side === 'buy' ? '买入' : '卖出'}</td>
+            <td>${t.price.toFixed(2)}</td>
+            <td>${t.qty.toLocaleString()}</td>
+            <td>¥${t.amount.toLocaleString('zh-CN', {minimumFractionDigits: 2})}</td>
+            <td>${t.fee.toFixed(2)}</td>
+            <td>${t.tax.toFixed(2)}</td>
+        </tr>`).join('')
+        : '<tr><td colspan="7" style="text-align:center;color:#90a4ae">区间内无交易信号</td></tr>');
+}
+
+// ================= 市场状态识别 =================
+function loadRegime() {
+    $.getJSON('/api/market/regime').done(function(res) {
+        if (res.code !== 0 || !res.data || res.data.error) {
+            $('#regimeCard').html('<span style="color:#90a4ae">市场状态暂不可用</span>');
+            return;
+        }
+        const d = res.data;
+        const badge = d.regime_en === 'uptrend' ? '#e53935' : d.regime_en === 'downtrend' ? '#2e7d32' : '#f9a825';
+        const rec = (d.recommend || []).map(k => { const s = btMeta.find(x => x.key === k); return s ? s.label : k; }).join('、');
+        $('#regimeCard').html(`
+            <div>
+                <span style="color:#78909c;font-size:14px">当前市场状态（${d.index_code} · ${d.date}）</span>
+                <span style="display:inline-block;margin-left:10px;padding:4px 14px;border-radius:14px;font-weight:bold;color:#fff;background:${badge}">${d.regime} · ${d.volatility_level}</span>
+            </div>
+            <div style="color:#78909c;font-size:13px">
+                20日涨幅 <b class="${d.metrics.ret_20d_pct >= 0 ? 'rise' : 'fall'}">${fmtPct(d.metrics.ret_20d_pct)}</b>
+                · 年化波动 ${d.metrics.volatility_annual_pct.toFixed(1)}%（分位 ${d.metrics.volatility_percentile}%）
+                · 收盘 ${d.metrics.close} / MA20 ${d.metrics.ma20} / MA60 ${d.metrics.ma60}
+            </div>
+            <div style="font-size:13px;color:#455a64">💡 ${d.recommend_desc}${rec ? '<b>：' + rec + '</b>' : ''}</div>
+        `);
+    });
+}
+
+// ================= 策略横向对比 =================
+let cmpChart = null, optChart = null;
+const METRIC_LABELS = {return_pct: '总收益%', annualized_pct: '年化%', excess_pct: '超额%',
+                       max_drawdown_pct: '最大回撤%', sharpe: '夏普', win_rate_pct: '胜率%'};
+
+function btCommonPayload() {
+    return {
+        stock_code: $('#btCode').val().trim().toUpperCase(),
+        start_date: $('#btStart').val(),
+        end_date: $('#btEnd').val(),
+        initial_capital: parseInt($('#btCapital').val(), 10) || 100000,
+    };
+}
+
+function runCompare() {
+    const strategies = $('.cmp-check:checked').map(function() { return this.value; }).get();
+    if (!strategies.length) { alert('请至少勾选一个策略'); return; }
+    const payload = btCommonPayload();
+    if (!payload.stock_code) { alert('请在上方输入股票代码'); return; }
+    payload.strategies = strategies;
+    const $btn = $('#cmpRun').prop('disabled', true).text('对比中...');
+    $.ajax({url: '/api/backtest/compare', method: 'POST', contentType: 'application/json', data: JSON.stringify(payload)})
+    .done(function(res) {
+        if (res.code !== 0) { alert(res.msg); return; }
+        renderCompare(res.data);
+    })
+    .fail(function(xhr) { alert((xhr.responseJSON && xhr.responseJSON.msg) || '对比失败'); })
+    .always(function() { $btn.prop('disabled', false).text('对比所选策略'); });
+}
+
+function renderCompare(list) {
+    const ok = list.filter(x => x.summary);
+    if (!ok.length) { alert('所选策略均无有效结果'); return; }
+    $('#cmpChart').show();
+    cmpChart = cmpChart || echarts.init($('#cmpChart')[0]);
+    cmpChart.setOption({
+        tooltip: {trigger: 'axis', formatter: function(params) {
+            const x = ok[params[0].dataIndex];
+            const s = x.summary;
+            return `${x.label}<br/>收益：${fmtPct(s.return_pct)}<br/>回撤：${s.max_drawdown_pct.toFixed(2)}%` +
+                   `<br/>夏普：${s.sharpe == null ? '--' : s.sharpe}<br/>胜率：${s.win_rate_pct == null ? '--' : s.win_rate_pct.toFixed(1)}%`;
+        }},
+        grid: {left: 60, right: 30, top: 30, bottom: 50},
+        xAxis: {type: 'category', data: ok.map(x => x.label), axisLabel: {rotate: 20}},
+        yAxis: {type: 'value', axisLabel: {formatter: '{value}%'}},
+        series: [{type: 'bar', data: ok.map(x => ({value: x.summary.return_pct,
+            itemStyle: {color: x.summary.return_pct >= 0 ? '#e53935' : '#2e7d32'}})),
+            label: {show: true, position: 'top', formatter: p => fmtPct(p.value)}}],
+    }, true);
+
+    $('#cmpTable').show().html(`<div style="overflow-x:auto"><table class="styled-table" style="width:100%">
+        <thead><tr><th>策略</th><th>总收益</th><th>年化</th><th>超额</th><th>最大回撤</th><th>夏普</th><th>胜率</th><th>交易次数</th></tr></thead>
+        <tbody>${ok.map(x => { const s = x.summary; const c = s.return_pct >= 0 ? 'rise' : 'fall'; return `
+            <tr><td><b>${x.label}</b></td>
+            <td class="${c}">${fmtPct(s.return_pct)}</td>
+            <td>${fmtPct(s.annualized_pct)}</td>
+            <td>${fmtPct(s.excess_pct)}</td>
+            <td>${s.max_drawdown_pct.toFixed(2)}%</td>
+            <td>${s.sharpe == null ? '--' : s.sharpe}</td>
+            <td>${s.win_rate_pct == null ? '--' : s.win_rate_pct.toFixed(1) + '%'}</td>
+            <td>${s.trade_count}</td></tr>`; }).join('')}</tbody></table></div>`);
+}
+
+// ================= 参数寻优热力图 =================
+function runOptimize() {
+    const payload = btCommonPayload();
+    if (!payload.stock_code) { alert('请在上方输入股票代码'); return; }
+    payload.strategy = $('#optStrategy').val();
+    payload.metric = $('#optMetric').val();
+    payload.grid_points = parseInt($('#optPoints').val(), 10);
+    const $btn = $('#optRun').prop('disabled', true).text('寻优中...');
+    $.ajax({url: '/api/backtest/optimize', method: 'POST', contentType: 'application/json', data: JSON.stringify(payload)})
+    .done(function(res) {
+        if (res.code !== 0) { alert(res.msg); return; }
+        renderOptimize(res.data);
+    })
+    .fail(function(xhr) { alert((xhr.responseJSON && xhr.responseJSON.msg) || '寻优失败'); })
+    .always(function() { $btn.prop('disabled', false).text('开始寻优'); });
+}
+
+function renderOptimize(o) {
+    $('#optChart').show();
+    optChart = optChart || echarts.init($('#optChart')[0]);
+    const xs = o.x_values, ys = o.y_values;
+    const data = o.cells.map(c => [xs.indexOf(c.x), ys.indexOf(c.y), c.value]);
+    const vals = o.cells.map(c => c.value);
+    const mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals);
+    const xLab = PARAM_LABELS[o.x_param] || o.x_param;
+    const yLab = PARAM_LABELS[o.y_param] || o.y_param;
+    optChart.setOption({
+        title: {text: `最优 ${xLab}=${o.best.x}, ${yLab}=${o.best.y} → ${METRIC_LABELS[o.metric]||o.metric} ${o.best.value}`, left: 10, top: 0, textStyle: {fontSize: 13, color: '#455a64'}},
+        tooltip: {formatter: p => `${xLab} ${xs[p.value[0]]} / ${yLab} ${ys[p.value[1]]}<br/>${METRIC_LABELS[o.metric]||o.metric}: ${p.value[2]}`},
+        grid: {left: 80, right: 100, top: 40, bottom: 50},
+        xAxis: {type: 'category', data: xs, name: xLab},
+        yAxis: {type: 'category', data: ys, name: yLab},
+        visualMap: {min: mn, max: mx, calculable: true, orient: 'vertical', right: 0, top: 'center',
+                    inRange: {color: ['#2e7d32', '#e8f5e9', '#ffffff', '#fdecea', '#e53935']}},
+        series: [{type: 'heatmap', data: data,
+                  label: {show: true, formatter: p => p.value[2]},
+                  emphasis: {itemStyle: {shadowBlur: 8, shadowColor: 'rgba(0,0,0,.3)'}}}],
+    }, true);
+}
+</script>
+{% endblock %}

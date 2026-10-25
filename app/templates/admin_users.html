@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}用户管理 - QuantDesk{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="page-title">用户管理（管理员）</div>
+    <div class="card">
+        <table>
+            <thead><tr>
+                <th>账号</th><th>姓名</th><th>手机号</th><th>角色</th><th>状态</th><th>注册时间</th><th>操作</th>
+            </tr></thead>
+            <tbody id="userList"><tr><td colspan="7" class="loading">加载中...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+function loadUsers() {
+    $.getJSON('/api/admin/users').done(function(res) {
+        const box = $('#userList');
+        if (res.code !== 0) { box.html('<tr><td colspan="7" class="empty-tip">' + res.msg + '</td></tr>'); return; }
+        box.html(res.data.map(u => `<tr>
+            <td>${u.user_account}</td><td>${u.real_name || '--'}</td><td>${u.phone || '--'}</td>
+            <td>${u.role === 'admin' ? '管理员' : '用户'}</td>
+            <td>${u.status === 'active' ? '正常' : '已禁用'}</td>
+            <td>${u.created_at}</td>
+            <td>
+                <button class="btn ${u.status === 'active' ? 'btn-gray' : 'btn-green'} btn-sm"
+                    onclick="setStatus('${u.user_account}', '${u.status === 'active' ? 'disabled' : 'active'}')">
+                    ${u.status === 'active' ? '禁用' : '启用'}</button>
+                <button class="btn btn-sm" onclick="resetPwd('${u.user_account}')">重置密码</button>
+            </td>
+        </tr>`).join(''));
+    }).fail(function() {
+        $('#userList').html('<tr><td colspan="7" class="empty-tip">加载失败</td></tr>');
+    });
+}
+function setStatus(account, status) {
+    $.ajax({url: '/api/admin/user/status', type: 'POST', contentType: 'application/json',
+        data: JSON.stringify({user_account: account, status: status})}).done(function(res) {
+        alert(res.msg); loadUsers();
+    });
+}
+function resetPwd(account) {
+    const pwd = prompt(`为 ${account} 设置新密码（至少6位）：`);
+    if (!pwd) return;
+    $.ajax({url: '/api/admin/user/reset_password', type: 'POST', contentType: 'application/json',
+        data: JSON.stringify({user_account: account, new_password: pwd})}).done(function(res) {
+        alert(res.msg);
+    });
+}
+$(loadUsers);
+</script>
+{% endblock %}

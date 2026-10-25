@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}{{ industry_name }} - 行业个股 - QuantDesk{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="page-title">{{ industry_name }}
+        <span class="tip" id="indMeta"></span>
+        <span style="float:right">
+            <a class="btn btn-sm" href="/heatmap" style="text-decoration:none;color:inherit">← 返回热力图</a>
+            <button type="button" class="btn btn-sm" onclick="loadIndustry()">🔄 刷新</button>
+        </span>
+    </div>
+
+    <div class="card" style="margin-bottom:14px;display:flex;gap:24px;flex-wrap:wrap;align-items:center" id="indSummary">
+        <span class="loading">行业数据加载中...</span>
+    </div>
+
+    <div class="card">
+        <h3>行业个股（{{ industry_name }}）
+            <span style="float:right">
+                <input type="text" id="indSearch" placeholder="搜索代码 / 名称"
+                       style="padding:5px 10px;border:1px solid #cfd8dc;border-radius:4px;font-size:14px;width:180px">
+            </span>
+        </h3>
+        <div class="tip">点击列头排序（↑升序 ↓降序）· 点击个股行查看K线详情</div>
+        <div id="indTable"><div class="loading">加载中...</div></div>
+    </div>
+</div>
+
+<script>
+const INDUSTRY = {{ industry_name | tojson }};
+let indData = null;          // {trade_date, avg_pct, amount_yi, stock_count, stocks}
+let sortKey = 'amount';      // 默认按成交额降序（服务端已排好）
+let sortAsc = false;
+
+/* 涨跌幅红涨绿跌（中国惯例） */
+function pctCell(p) {
+    return p == null ? '--' : `<span class="${p >= 0 ? 'rise' : 'fall'}">${p >= 0 ? '+' : ''}${p.toFixed(2)}%</span>`;
+}
+function pctColor(p) {
+    const clamp = Math.max(-6, Math.min(6, p));
+    const t = clamp / 6;
+    if (t >= 0) return `rgba(229,57,53,${(0.25 + 0.75 * t).toFixed(2)})`;
+    return `rgba(46,125,50,${(0.25 + 0.75 * (-t)).toFixed(2)})`;
+}
+
+function loadIndustry() {
+    $('#indSummary').html('<span class="loading">行业数据加载中...</span>');
+    $('#indTable').html('<div class="loading">加载中...</div>');
+    $.getJSON('/api/market/industry_stocks?industry=' + encodeURIComponent(INDUSTRY)).done(function(res) {
+        if (res.code !== 0) {
+            $('#indSummary').html(`<span style="color:#e53935">${res.msg}</span>`);
+            $('#indTable').empty();
+            return;
+        }
+        indData = res.data;
+        const up = indData.stocks.filter(s => s.pct > 0).length;
+        const down = indData.stocks.filter(s => s.pct < 0).length;
+        $('#indMeta').text(`（数据日期 ${indData.trade_date}）`);
+        $('#indSummary').html(`
+            <div>个股 <b>${indData.stock_count}</b> 只</div>
+            <div>行业平均涨跌幅：<b style="color:${pctColor(indData.avg_pct)};font-size:20px">
+                ${indData.avg_pct >= 0 ? '+' : ''}${indData.avg_pct.toFixed(2)}%</b></div>
+            <div>行业成交额：<b>${indData.amount_yi.toFixed(1)}</b> 亿元</div>
+            <div style="color:#e53935">上涨 <b>${up}</b></div>
+            <div style="color:#2e7d32">下跌 <b>${down}</b></div>`);
+        renderTable();
+    }).fail(function() {
+        $('#indSummary').html('<span style="color:#e53935">加载失败，请刷新重试</span>');
+    });
+}
+
+function sortedStocks() {
+    const kw = $('#indSearch').val().trim().toLowerCase();
+    let rows = indData.stocks;
+    if (kw) rows = rows.filter(s => s.code.toLowerCase().includes(kw) || s.name.toLowerCase().includes(kw));
+    if (sortKey) {
+        rows = [...rows].sort((a, b) => {
+            const va = a[sortKey] == null ? -Infinity : a[sortKey];
+            const vb = b[sortKey] == null ? -Infinity : b[sortKey];
+            return sortAsc ? va - vb : vb - va;
+        });
+    }
+    return rows;
+}
+
+function renderTable() {
+    const rows = sortedStocks();
+    const cols = [['code', '代码'], ['name', '名称'], ['close', '现价'],
+                  ['pct', '涨跌幅'], ['amount', '成交额(亿)']];
+    const head = cols.map(([k, label]) => {
+        const arrow = sortKey === k ? (sortAsc ? ' ↑' : ' ↓') : '';
+        return `<th onclick="setSort('${k}')" style="text-align:${k === 'name' ? 'left' : 'right'};
+            padding:8px 10px;color:${sortKey === k ? '#1e88e5' : '#90a4ae'};font-weight:normal;
+            border-bottom:2px solid #eceff1;white-space:nowrap;cursor:pointer;user-select:none">${label}${arrow}</th>`;
+    }).join('');
+    const body = rows.length ? rows.map(s => `
+        <tr onclick="window.open('/stock_kline/${s.code}')" style="cursor:pointer"
+            onmouseover="this.style.background='#f5f9ff'" onmouseout="this.style.background=''">
+            <td style="padding:8px 10px;border-bottom:1px solid #f5f5f5;white-space:nowrap;color:#78909c">${s.code}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid #f5f5f5;white-space:nowrap;font-weight:500">${s.name}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid #f5f5f5;text-align:right;white-space:nowrap">${s.close != null ? s.close.toFixed(2) : '--'}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid #f5f5f5;text-align:right;white-space:nowrap">${pctCell(s.pct)}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid #f5f5f5;text-align:right;white-space:nowrap">${s.amount != null ? s.amount.toFixed(2) : '--'}</td>
+        </tr>`).join('') : '<tr><td colspan="5" style="padding:20px;text-align:center;color:#90a4ae">无匹配个股</td></tr>';
+    $('#indTable').html(`<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:15px">
+        <thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>
+        <div class="tip" style="margin-top:8px">共 ${rows.length} 只</div>`);
+}
+
+function setSort(k) {
+    if (sortKey === k) { sortAsc = !sortAsc; } else { sortKey = k; sortAsc = (k === 'name'); }
+    renderTable();
+}
+
+$(function() {
+    loadIndustry();
+    $('#indSearch').on('input', function() { if (indData) renderTable(); });
+});
+</script>
+{% endblock %}

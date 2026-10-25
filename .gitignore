@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 敏感配置（真实密钥）
+config/.env
+.env
+
+# 运行日志与临时文件
+logs/
+*.log
+.workbuddy_run.log
+
+# IDE
+.idea/
+.vscode/

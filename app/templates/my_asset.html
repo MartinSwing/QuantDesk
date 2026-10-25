@@ -1,0 +1,387 @@
+{% extends "base.html" %}
+{% block title %}我的资产 - QuantDesk{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="page-title">我的资产</div>
+
+    <div class="card">
+        <h3>资金操作</h3>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-green" onclick="openFlowModal('deposit')">入金</button>
+            <button class="btn btn-gray" onclick="openFlowModal('withdraw')">出金</button>
+            <a class="btn" href="/equity" style="text-decoration:none">📊 收益曲线</a>
+            <span class="tip" style="display:inline" id="flowTip"></span>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>股票交易</h3>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <input type="text" id="quickCode" placeholder="股票代码/名称，如 000001 或 平安" style="width:220px" autocomplete="off">
+            <datalist id="codeSuggest"></datalist>
+            <button class="btn btn-red" onclick="openTradeModal('buy')">买入</button>
+            <button class="btn btn-green" onclick="openTradeModal('sell')">卖出</button>
+            <span class="tip" style="display:inline" id="tradeTip"></span>
+        </div>
+        <div class="tip" id="quoteInfo" style="color:#546e7a"></div>
+    </div>
+
+    <div class="card">
+        <h3>资产概览</h3>
+        <table>
+            <thead><tr><th>可用资金</th><th>冻结资金</th><th>持仓市值</th><th>总资产</th><th>总盈亏</th></tr></thead>
+            <tbody id="summaryRow"><tr><td colspan="5" class="loading">加载中...</td></tr></tbody>
+        </table>
+    </div>
+
+    <div class="card">
+        <h3>当前持仓</h3>
+        <table>
+            <thead><tr>
+                <th>股票</th><th>持仓/可卖</th><th>成本价</th><th>现价</th><th>市值</th><th>盈亏</th><th>盈亏比例</th>
+            </tr></thead>
+            <tbody id="holdList"><tr><td colspan="7" class="loading">加载中...</td></tr></tbody>
+        </table>
+    </div>
+
+    <div class="card">
+        <h3>资金流水（最近100条）</h3>
+        <table>
+            <thead><tr><th>流水号</th><th>类型</th><th>金额</th><th>渠道</th><th>备注</th><th>状态</th><th>时间</th></tr></thead>
+            <tbody id="flowList"><tr><td colspan="7" class="loading">加载中...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+
+<!-- 入金 / 出金 弹窗 -->
+<div class="modal-mask" id="flowModal">
+    <div class="modal">
+        <div class="modal-head"><h3 id="flowTitle">入金申请</h3><span class="x" onclick="closeModal('flowModal')">&times;</span></div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>金额（元）</label>
+                <input type="number" id="flowAmount" min="0.01" step="0.01" placeholder="请输入金额">
+                <div class="hint" id="flowAvail"></div>
+            </div>
+            <div class="form-group">
+                <label>资金渠道</label>
+                <select id="flowChannel">
+                    <option value="银行转账">银行转账</option>
+                    <option value="第三方支付">第三方支付</option>
+                    <option value="其他">其他</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>备注（选填）</label>
+                <input type="text" id="flowRemark" maxlength="100" placeholder="备注信息">
+            </div>
+            <div class="err" id="flowErr"></div>
+        </div>
+        <div class="modal-foot">
+            <button class="btn btn-gray" onclick="closeModal('flowModal')">取消</button>
+            <button class="btn" id="flowSubmitBtn" onclick="submitFlow()">确认入金</button>
+        </div>
+    </div>
+</div>
+
+<!-- 买入 / 卖出 交易弹窗 -->
+<div class="modal-mask" id="tradeModal">
+    <div class="modal">
+        <div class="modal-head"><h3 id="tradeTitle">买入委托</h3><span class="x" onclick="closeModal('tradeModal')">&times;</span></div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>股票代码</label>
+                <input type="text" id="tradeCode" list="codeSuggest" placeholder="如 000001.SZ" autocomplete="off">
+                <div class="hint">股票名称：<span id="tradeName">--</span>（输入代码后自动识别，支持下拉联想）</div>
+            </div>
+            <div class="form-group">
+                <label>股价（元）</label>
+                <input type="number" id="tradePrice" min="0.01" step="0.01" placeholder="0.00">
+                <div class="hint">默认带入最新行情价，可修改</div>
+            </div>
+            <div class="form-group">
+                <label>交易数量（股，100 的整数倍）</label>
+                <input type="number" id="tradeQty" min="100" step="100" placeholder="100">
+            </div>
+            <div class="form-group">
+                <label>交易金额（元，自动计算）</label>
+                <input type="text" id="tradeAmount" class="readonly" value="--" readonly>
+            </div>
+            <div class="form-group">
+                <label>交易日期时间</label>
+                <input type="datetime-local" id="tradeTime">
+                <div class="hint">成交时间将被记录，不可为未来时间</div>
+            </div>
+            <div class="amount-line"><span>预计佣金</span><span id="feeEst">--</span></div>
+            <div class="amount-line"><span>预计印花税（仅卖出）</span><span id="taxEst">--</span></div>
+            <div class="err" id="tradeErr"></div>
+        </div>
+        <div class="modal-foot">
+            <button class="btn btn-gray" onclick="closeModal('tradeModal')">取消</button>
+            <button class="btn btn-red" id="tradeSubmitBtn" onclick="submitTrade()">确认买入</button>
+        </div>
+    </div>
+</div>
+
+<script>
+/* ================= 数据加载 ================= */
+let holdings = {};   // {code: {name, available}}
+let quoteCache = {}; // {code: {name, price}}
+
+function loadSummary() {
+    $.getJSON('/api/asset/summary').done(function(res) {
+        if (res.code !== 0) return;
+        const d = res.data;
+        const profit = d.total_profit;
+        const profitRate = d.market_value > 0
+            ? (profit / (d.total_asset - balance0(d)) * 100) : 0;
+        $('#summaryRow').html(`<tr>
+            <td>${d.available_balance.toFixed(2)}</td>
+            <td>${d.frozen_balance.toFixed(2)}</td>
+            <td>${d.market_value.toFixed(2)}</td>
+            <td style="font-weight:bold">${d.total_asset.toFixed(2)}</td>
+            <td class="${profit >= 0 ? 'rise' : 'fall'}">${profit.toFixed(2)}</td>
+        </tr>`);
+        const box = $('#holdList');
+        holdings = {};
+        if (d.hold_list.length === 0) {
+            box.html('<tr><td colspan="7" class="empty-tip">暂无持仓</td></tr>');
+        } else {
+            box.html(d.hold_list.map(h => {
+                const cls = h.profit_loss >= 0 ? 'rise' : 'fall';
+                holdings[h.stock_code] = {name: h.stock_name, available: h.available_quantity};
+                return `<tr>
+                    <td><a href="/stock_kline/${h.stock_code}" style="color:#1e88e5;text-decoration:none">${h.stock_code} ${h.stock_name}</a></td>
+                    <td>${h.quantity} / ${h.available_quantity}</td>
+                    <td>${h.avg_cost.toFixed(3)}</td><td>${h.current_price}</td>
+                    <td>${h.market_value.toFixed(2)}</td>
+                    <td class="${cls}">${h.profit_loss.toFixed(2)}</td>
+                    <td class="${cls}">${h.profit_loss_rate}%
+                        <a href="javascript:void(0)" onclick="openTradeModal('sell','${h.stock_code}')" style="color:#ef5350;margin-left:6px;text-decoration:none">卖出</a>
+                    </td>
+                </tr>`;
+            }).join(''));
+        }
+    }).fail(function() {
+        $('#summaryRow').html('<tr><td colspan="5" class="empty-tip">加载失败</td></tr>');
+    });
+    function balance0(d){ return d.total_asset - d.total_profit || 1; }
+}
+
+function loadFlows() {
+    $.getJSON('/api/asset/flows').done(function(res) {
+        const box = $('#flowList');
+        if (res.code !== 0 || res.data.length === 0) {
+            box.html('<tr><td colspan="7" class="empty-tip">暂无流水</td></tr>'); return;
+        }
+        box.html(res.data.map(f => `<tr>
+            <td style="color:#90a4ae">${f.flow_no}</td><td>${f.flow_type}</td>
+            <td>${f.amount.toFixed(2)}</td><td>${f.channel || '-'}</td>
+            <td>${f.remark || '-'}</td>
+            <td>${f.status === 'success' ? '成功' : '失败'}</td>
+            <td>${f.created_at}</td></tr>`).join(''));
+    });
+}
+
+/* ================= 弹窗通用 ================= */
+function closeModal(id) { $('#' + id).removeClass('show'); }
+function openModal(id) { $('#' + id).addClass('show'); }
+$('.modal-mask').on('click', function(e) { if (e.target === this) $(this).removeClass('show'); });
+
+function nowLocal() {
+    const d = new Date();
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/* ================= 入金 / 出金弹窗 ================= */
+let flowType = 'deposit';
+function openFlowModal(type) {
+    flowType = type;
+    $('#flowTitle').text(type === 'deposit' ? '入金申请' : '出金申请');
+    $('#flowSubmitBtn').text(type === 'deposit' ? '确认入金' : '确认出金')
+        .attr('class', 'btn ' + (type === 'deposit' ? 'btn-green' : 'btn-gray'));
+    $('#flowAmount').val(''); $('#flowRemark').val(''); $('#flowErr').text('');
+    $('#flowAvail').text(type === 'withdraw' ? '出金金额不可超过当前可用资金' : '单笔入金上限 1,000 万元（模拟环境）');
+    openModal('flowModal');
+    setTimeout(() => $('#flowAmount').focus(), 100);
+}
+
+function submitFlow() {
+    const amount = Number($('#flowAmount').val());
+    const channel = $('#flowChannel').val();
+    const remark = $('#flowRemark').val().trim();
+    const err = msg => $('#flowErr').text(msg);
+
+    if (!amount || isNaN(amount)) return err('请输入金额');
+    if (amount <= 0) return err('金额必须为正数');
+    err('');
+
+    $.ajax({url: `/api/asset/${flowType}`, type: 'POST', contentType: 'application/json',
+        data: JSON.stringify({amount: amount, channel: channel, remark: remark})})
+    .done(function(res) {
+        if (res.code === 0) {
+            closeModal('flowModal');
+            $('#flowTip').text(res.msg).css('color', '#2e7d32');
+            loadSummary(); loadFlows();
+        } else {
+            err(res.msg);
+        }
+    }).fail(function() { err('网络异常，请稍后重试'); });
+}
+
+/* ================= 交易弹窗 ================= */
+let tradeSide = 'buy';
+let searchTimer = null;
+
+function openTradeModal(side, code) {
+    tradeSide = side;
+    $('#tradeTitle').text(side === 'buy' ? '买入委托' : '卖出委托');
+    $('#tradeSubmitBtn').text(side === 'buy' ? '确认买入' : '确认卖出')
+        .attr('class', 'btn ' + (side === 'buy' ? 'btn-red' : 'btn-green'));
+    $('#tradeErr').text('');
+    $('#tradeCode').val(code || '').prop('readonly', !!code);
+    $('#tradeName').text('--'); $('#tradePrice').val(''); $('#tradeQty').val('');
+    $('#tradeAmount').val('--'); $('#feeEst').text('--'); $('#taxEst').text('--');
+    $('#tradeTime').val(nowLocal());
+    openModal('tradeModal');
+    if (code) {
+        fillQuote(code);
+    } else {
+        setTimeout(() => $('#tradeCode').focus(), 100);
+    }
+}
+
+function fillQuote(code) {
+    $.ajax({url: '/api/market/realtime', type: 'POST', contentType: 'application/json',
+        data: JSON.stringify({stock_codes: [code]})}).done(function(res) {
+        if (res.code !== 0 || !res.data.length || !res.data[0].current_price) {
+            $('#tradeName').text('未识别或暂无行情');
+            return;
+        }
+        const q = res.data[0];
+        quoteCache[code] = {name: q.stock_name, price: Number(q.current_price)};
+        $('#tradeName').text(q.stock_name);
+        if (!$('#tradePrice').val()) $('#tradePrice').val(q.current_price);
+        recalc();
+    });
+}
+
+// 联想搜索（防抖 300ms）
+$('#tradeCode, #quickCode').on('input', function() {
+    const kw = $(this).val().trim();
+    clearTimeout(searchTimer);
+    if (kw.length < 2) { $('#codeSuggest').empty(); return; }
+    searchTimer = setTimeout(function() {
+        $.getJSON('/api/market/search', {q: kw}).done(function(res) {
+            if (res.code !== 0) return;
+            $('#codeSuggest').html(res.data.map(s =>
+                `<option value="${s.ts_code}">${s.name}（${s.industry || 'A股'}）</option>`).join(''));
+        });
+    }, 300);
+});
+
+// 代码确定 → 拉现价并回填
+$('#tradeCode').on('change', function() {
+    const code = $(this).val().trim().toUpperCase();
+    if (!/^\d{6}\.(SZ|SH|BJ)$/i.test(code)) { $('#tradeName').text('--'); return; }
+    $('#tradePrice').val('');
+    fillQuote(code);
+});
+
+$('#tradePrice, #tradeQty').on('input', recalc);
+
+function recalc() {
+    const price = Number($('#tradePrice').val()) || 0;
+    const qty = Number($('#tradeQty').val()) || 0;
+    const amount = price * qty;
+    $('#tradeAmount').val(amount > 0 ? amount.toFixed(2) : '--');
+    if (amount > 0) {
+        const fee = Math.max(amount * 0.00025, 5);
+        $('#feeEst').text(fee.toFixed(2) + ' 元（万2.5，最低5元）');
+        $('#taxEst').text(tradeSide === 'sell' ? (amount * 0.0005).toFixed(2) + ' 元' : '0.00 元');
+    } else {
+        $('#feeEst').text('--'); $('#taxEst').text('--');
+    }
+}
+
+function validateTrade() {
+    const code = $('#tradeCode').val().trim().toUpperCase();
+    const price = Number($('#tradePrice').val());
+    const qty = Number($('#tradeQty').val());
+    const timeStr = $('#tradeTime').val();
+    const err = msg => { $('#tradeErr').text(msg); return !msg; };
+
+    if (!/^\d{6}\.(SZ|SH|BJ)$/i.test(code)) return err('请输入正确的股票代码（如 000001.SZ）');
+    if (!price || price <= 0) return err('股价必须为正数');
+    if (price > 100000) return err('股价数值异常，请检查');
+    if (!qty || qty <= 0) return err('交易数量必须大于0');
+    if (qty % 100 !== 0) return err('交易数量必须为 100 股（一手）的整数倍');
+    const amount = price * qty;
+    if (amount <= 0) return err('交易金额必须为正数');
+    if (tradeSide === 'sell') {
+        const h = holdings[code];
+        if (!h) return err(`您未持有 ${code}，无法卖出`);
+        if (qty > h.available) return err(`可卖数量不足：当前可卖 ${h.available} 股`);
+    }
+    if (timeStr) {
+        const t = new Date(timeStr);
+        if (isNaN(t.getTime())) return err('交易时间格式不正确');
+        if (t.getTime() > Date.now() + 60000) return err('交易时间不可为未来时间');
+    }
+    return true;
+}
+
+function submitTrade() {
+    if (!validateTrade()) return;
+    const code = $('#tradeCode').val().trim().toUpperCase();
+    const price = Number($('#tradePrice').val());
+    const qty = Number($('#tradeQty').val());
+    const timeStr = $('#tradeTime').val();
+    const amount = (price * qty).toFixed(2);
+
+    const fee = Math.max(price * qty * 0.00025, 5);
+    const tax = tradeSide === 'sell' ? price * qty * 0.0005 : 0;
+    const extra = tradeSide === 'buy'
+        ? `\n预计佣金 ${fee.toFixed(2)} 元，合计约 ${(price * qty + fee).toFixed(2)} 元`
+        : `\n预计费用 ${(fee + tax).toFixed(2)} 元（佣金+印花税），预计到账 ${(price * qty - fee - tax).toFixed(2)} 元`;
+    if (!confirm(`确认${tradeSide === 'buy' ? '买入' : '卖出'} ${code} ${qty} 股 @ ${price.toFixed(2)} 元？\n交易金额 ${amount} 元${extra}`)) return;
+
+    $('#tradeSubmitBtn').prop('disabled', true).text('提交中...');
+    $.ajax({url: `/api/trade/${tradeSide}`, type: 'POST', contentType: 'application/json',
+        data: JSON.stringify({stock_code: code, quantity: qty, price: price, trade_time: timeStr || null})})
+    .done(function(res) {
+        $('#tradeSubmitBtn').prop('disabled', false).text(tradeSide === 'buy' ? '确认买入' : '确认卖出');
+        if (res.code === 0) {
+            const d = res.data;
+            closeModal('tradeModal');
+            $('#tradeTip').text(`${tradeSide === 'buy' ? '买入' : '卖出'}成交：${d.stock_name} ${d.quantity} 股 @ ${d.price} 元，费用 ${(Number(d.fee) + Number(d.tax || 0)).toFixed(2)} 元`)
+                .css('color', '#2e7d32');
+            loadSummary(); loadFlows();
+        } else {
+            $('#tradeErr').text(res.msg);
+        }
+    }).fail(function() {
+        $('#tradeSubmitBtn').prop('disabled', false).text(tradeSide === 'buy' ? '确认买入' : '确认卖出');
+        $('#tradeErr').text('网络异常，交易失败');
+    });
+}
+
+// 主页快捷区：代码确定后显示现价
+$('#quickCode').on('change', function() {
+    const code = $(this).val().trim().toUpperCase();
+    $('#quoteInfo').text('');
+    if (!/^\d{6}\.(SZ|SH|BJ)$/i.test(code)) return;
+    $.ajax({url: '/api/market/realtime', type: 'POST', contentType: 'application/json',
+        data: JSON.stringify({stock_codes: [code]})}).done(function(res) {
+        if (res.code !== 0 || !res.data.length || !res.data[0].current_price) {
+            $('#quoteInfo').text('未查到该股票行情，请确认代码'); return;
+        }
+        const q = res.data[0];
+        $('#quoteInfo').text(`${code} ${q.stock_name}｜现价 ${q.current_price.toFixed(2)} 元｜${q.pct_change >= 0 ? '+' : ''}${q.pct_change}%`);
+    });
+});
+
+$(function() { loadSummary(); loadFlows(); });
+</script>
+{% endblock %}

@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}交易记录 - QuantDesk{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="page-title">交易记录 <span class="tip" id="mtMeta"></span></div>
+    <div class="card">
+        <table>
+            <thead><tr>
+                <th>时间</th><th>订单号</th><th>股票</th><th>方向</th><th>价格</th>
+                <th>数量</th><th>金额</th><th>佣金</th><th>印花税</th><th>状态</th>
+            </tr></thead>
+            <tbody id="recordList"><tr><td colspan="10" class="loading">加载中...</td></tr></tbody>
+        </table>
+        <div id="mtPager" class="pager"></div>
+    </div>
+</div>
+
+<script>
+const MT_PAGE_SIZE = 20;
+let mtPage = 1;
+
+function loadRecords(page = 1) {
+    mtPage = page;
+    $('#recordList').html('<tr><td colspan="10" class="loading">加载中...</td></tr>');
+    $.getJSON(`/api/trade/records?page=${page}&page_size=${MT_PAGE_SIZE}`).done(function(res) {
+        if (res.code !== 0) {
+            $('#recordList').html(`<tr><td colspan="10" class="empty-tip">${res.msg || '加载失败'}</td></tr>`);
+            return;
+        }
+        const {total, page: cur, pages, rows} = res.data;
+        $('#mtMeta').text(`共 ${total} 笔`);
+        if (!rows.length) {
+            $('#recordList').html('<tr><td colspan="10" class="empty-tip">暂无交易记录</td></tr>');
+            $('#mtPager').empty();
+            return;
+        }
+        $('#recordList').html(rows.map(r => {
+            const sideCls = r.side === 'buy' ? 'rise' : 'fall';
+            const sideText = r.side === 'buy' ? '买入' : '卖出';
+            return `<tr>
+                <td>${r.created_at}</td>
+                <td style="color:#90a4ae">${r.order_no}</td>
+                <td><a href="/stock_kline/${r.stock_code}" style="color:#1e88e5;text-decoration:none">${r.stock_code} ${r.stock_name}</a></td>
+                <td class="${sideCls}" style="font-weight:bold">${sideText}</td>
+                <td>${r.price.toFixed(2)}</td><td>${r.quantity}</td>
+                <td>${r.amount.toFixed(2)}</td><td>${r.fee.toFixed(2)}</td><td>${r.tax.toFixed(2)}</td>
+                <td>${r.status === 'filled' ? '已成交' : '失败'}</td>
+            </tr>`;
+        }).join(''));
+        renderMtPager(cur, pages);
+    }).fail(function() {
+        $('#recordList').html('<tr><td colspan="10" class="empty-tip">加载失败</td></tr>');
+    });
+}
+
+function renderMtPager(cur, pages) {
+    if (pages <= 1) { $('#mtPager').html(`<span class="pg-info">共 1 页</span>`); return; }
+    const nums = [];
+    for (let i = 1; i <= pages; i++) {
+        if (i === 1 || i === pages || Math.abs(i - cur) <= 2) nums.push(i);
+        else if (nums[nums.length - 1] !== '…') nums.push('…');
+    }
+    const btn = (label, target, disabled, active) =>
+        `<button ${disabled ? 'disabled' : (active ? 'class="active"' : `onclick="loadRecords(${target})"`)}>${label}</button>`;
+    $('#mtPager').html(`<span class="pg-info">第 ${cur}/${pages} 页</span>`
+        + btn('« 首页', 1, cur === 1) + btn('‹', cur - 1, cur === 1)
+        + nums.map(p => p === '…' ? '<span class="pg-ellipsis">…</span>' : btn(p, p, false, p === cur)).join('')
+        + btn('›', cur + 1, cur === pages) + btn('末页 »', pages, cur === pages));
+}
+
+$(function() { loadRecords(1); });
+</script>
+{% endblock %}

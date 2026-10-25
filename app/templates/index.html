@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% block title %}首页 - QuantDesk{% endblock %}
+{% block content %}
+<div class="container">
+    <!-- 资产卡片 -->
+    <div style="display:flex;gap:16px;margin-bottom:18px">
+        <div class="card" style="flex:1">
+            <h3>可用资金</h3>
+            <div class="value" id="balance" style="font-size:28px;font-weight:bold">--</div>
+        </div>
+        <div class="card" style="flex:1">
+            <h3>总资产</h3>
+            <div class="value" id="totalAsset" style="font-size:28px;font-weight:bold">--</div>
+        </div>
+        <div class="card" style="flex:1">
+            <h3>持仓盈亏</h3>
+            <div class="value" id="totalProfit" style="font-size:28px;font-weight:bold">--</div>
+        </div>
+    </div>
+
+    <!-- 北向资金 -->
+    <div class="card" style="margin-bottom:18px">
+        <h3>北向资金（沪深港通） <span class="tip" style="display:inline">近 60 日净买入，红流入绿流出</span></h3>
+        <div id="northChart" style="height:260px"></div>
+    </div>
+
+    <!-- 搜索 -->
+    <div class="card">
+        <h3>搜索添加自选股</h3>
+        <div style="display:flex;gap:10px">
+            <input type="text" id="searchInput" placeholder="输入股票代码或名称，如 000001 / 平安" style="flex:1"
+                   onkeydown="if(event.key==='Enter')searchStock()">
+            <button class="btn" onclick="searchStock()">搜索</button>
+        </div>
+        <div class="tip" id="searchTip"></div>
+        <div id="searchResult" style="display:none;margin-top:6px"></div>
+    </div>
+
+    <!-- 自选股 -->
+    <div class="card">
+        <h3>我的自选股</h3>
+        <table>
+            <thead><tr>
+                <th>股票</th><th>现价</th><th>涨跌幅</th><th>最高</th><th>最低</th><th>数据来源</th><th>操作</th>
+            </tr></thead>
+            <tbody id="favList">
+                <tr><td colspan="7" class="loading">加载中...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+function loadAsset() {
+    $.getJSON('/api/asset/summary').done(function(res) {
+        if (res.code !== 0) return;
+        $('#balance').text(res.data.available_balance.toFixed(2) + ' 元');
+        $('#totalAsset').text(res.data.total_asset.toFixed(2) + ' 元');
+        const profit = res.data.total_profit;
+        const el = $('#totalProfit');
+        el.text((profit >= 0 ? '+' : '') + profit.toFixed(2) + ' 元');
+        el.removeClass('rise fall').addClass(profit >= 0 ? 'rise' : 'fall');
+    }).fail(function() {
+        $('#balance,#totalAsset,#totalProfit').text('--');
+    });
+}
+
+function loadFavorites() {
+    $.getJSON('/api/favorite/list').done(function(res) {
+        const box = $('#favList');
+        if (res.code !== 0) { box.html('<tr><td colspan="7" class="empty-tip">加载失败</td></tr>'); return; }
+        if (res.data.length === 0) {
+            box.html('<tr><td colspan="7" class="empty-tip">暂无自选股，用上方搜索添加</td></tr>');
+            return;
+        }
+        let html = '';
+        res.data.forEach(s => {
+            const cls = s.pct_change >= 0 ? 'rise' : 'fall';
+            const sign = s.pct_change >= 0 ? '+' : '';
+            html += `<tr>
+                <td><a href="/stock_kline/${s.stock_code}" style="color:#1e88e5;text-decoration:none">${s.stock_code}<br><span style="color:#78909c">${s.stock_name}</span></a></td>
+                <td>${s.current_price ?? '--'}</td>
+                <td class="${cls}">${sign}${s.pct_change}%</td>
+                <td>${s.high ?? '--'}</td><td>${s.low ?? '--'}</td>
+                <td style="color:#b0bec5">${s.source === 'tushare' ? '实时' : '缓存'}</td>
+                <td><button class="btn btn-gray btn-sm" onclick="removeFav('${s.stock_code}')">移除</button></td>
+            </tr>`;
+        });
+        box.html(html);
+    }).fail(function() {
+        $('#favList').html('<tr><td colspan="7" class="empty-tip">加载失败，请刷新重试</td></tr>');
+    });
+}
+
+function removeFav(code) {
+    $.ajax({url: '/api/favorite/remove', type: 'POST', contentType: 'application/json',
+        data: JSON.stringify({stock_code: code})}).done(loadFavorites);
+}
+
+let northChart = null;
+function loadNorthFlow() {
+    $.getJSON('/api/market/north_flow', {days: 60}).done(function(res) {
+        if (res.code !== 0 || !res.data.dates || !res.data.dates.length) {
+            $('#northChart').html('<div class="empty-tip">暂无北向资金数据</div>');
+            return;
+        }
+        const d = res.data;
+        northChart = northChart || echarts.init($('#northChart')[0]);
+        northChart.setOption({
+            tooltip: {trigger: 'axis', formatter: function(p) {
+                const i = p[0].dataIndex;
+                return `${d.dates[i]}<br/>北向净买入：${(d.north[i]/10000).toFixed(2)} 亿元`;
+            }},
+            grid: {left: 60, right: 20, top: 30, bottom: 40},
+            xAxis: {type: 'category', data: d.dates},
+            yAxis: {type: 'value', axisLabel: {formatter: v => (v/10000).toFixed(0) + '亿'}},
+            dataZoom: [{type: 'inside'}, {type: 'slider', height: 16, bottom: 4}],
+            series: [{type: 'bar', data: d.north.map(v => ({value: v,
+                itemStyle: {color: v >= 0 ? '#e53935' : '#2e7d32'}}))}],
+        }, true);
+    }).fail(function() { $('#northChart').html('<div class="empty-tip">加载失败</div>'); });
+}
+
+function searchStock() {
+    const kw = $('#searchInput').val().trim();
+    if (!kw) return;
+    $.getJSON('/api/market/search', {q: kw}).done(function(res) {
+        const tip = $('#searchTip'), box = $('#searchResult');
+        box.hide().html('');
+        if (res.code !== 0 || res.data.length === 0) {
+            tip.text('未找到相关股票').css('color', '#e53935'); return;
+        }
+        tip.text(`找到 ${res.data.length} 只匹配`).css('color', '#2e7d32');
+        let html = '<table>';
+        res.data.forEach(s => {
+            html += `<tr><td>${s.ts_code}</td><td>${s.name}</td><td>${s.industry || '--'}</td>
+                <td style="text-align:right"><button class="btn btn-sm" onclick="addFav('${s.ts_code}','${s.name}')">+ 自选</button></td></tr>`;
+        });
+        box.html(html + '</table>').show();
+    }).fail(function() { $('#searchTip').text('搜索失败，请重试').css('color', '#e53935'); });
+}
+
+function addFav(code, name) {
+    $.ajax({url: '/api/favorite/add', type: 'POST', contentType: 'application/json',
+        data: JSON.stringify({stock_code: code, stock_name: name})}).done(function(res) {
+        $('#searchTip').text(res.msg).css('color', res.code === 0 ? '#2e7d32' : '#e53935');
+        loadFavorites();
+    });
+}
+
+$(function() { loadAsset(); loadFavorites(); loadNorthFlow(); });
+</script>
+{% endblock %}

@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+{% block title %}涨停板复盘 - QuantDesk{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="page-title">涨停板复盘 <span class="tip" id="limitMeta"></span>
+        <button type="button" class="btn btn-sm" style="float:right" onclick="loadLimit()">🔄 刷新</button>
+    </div>
+
+    <!-- 统计概览 -->
+    <div class="card" style="margin-bottom:14px;display:flex;gap:26px;flex-wrap:wrap;font-size:16px;align-items:center" id="limitSummary">
+        <span class="loading">涨跌停数据加载中，全市场快照约需 15 秒...</span>
+    </div>
+
+    <!-- 左右双栏：左涨停 右跌停 -->
+    <div id="limitCols" style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
+        <div class="card" style="flex:1;min-width:420px">
+            <h3 style="color:#e53935">🔥 涨停榜 <span class="tip" id="upCount" style="display:inline"></span></h3>
+            <div class="limit-scroll" id="upBody"><div class="loading">加载中...</div></div>
+            <div class="pager" id="upPager"></div>
+        </div>
+        <div class="card" style="flex:1;min-width:420px">
+            <h3 style="color:#2e7d32">🧊 跌停榜 <span class="tip" id="downCount" style="display:inline"></span></h3>
+            <div class="limit-scroll" id="downBody"><div class="loading">加载中...</div></div>
+            <div class="pager" id="downPager"></div>
+        </div>
+    </div>
+</div>
+
+<style>
+/* 榜单滚动区：等高（左右两栏分页条水平对齐），表头吸顶 */
+.limit-scroll {
+    height: max(320px, calc(100vh - 380px));
+    overflow-y: auto;
+    border: 1px solid #eceff1;
+    border-radius: 4px;
+}
+.limit-scroll table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.limit-scroll thead th {
+    position: sticky; top: 0; z-index: 1;
+    background: #f7f9fb; padding: 8px 9px;
+    color: #78909c; font-weight: normal; white-space: nowrap;
+    border-bottom: 2px solid #eceff1;
+}
+.limit-scroll tbody td { padding: 7px 9px; border-bottom: 1px solid #f5f5f5; white-space: nowrap; }
+/* 分页样式已统一提取至 /static/css/style.css（.pager / .pg-info / .pg-ellipsis） */
+@media (max-width: 960px) {
+    #limitCols > .card { min-width: 100% !important; }
+}
+</style>
+
+<script>
+const PAGE_SIZE = 10;              // 每页条数
+let limitData = null;              // {up, down, tick, source}
+let upPage = 1, downPage = 1;      // 两榜独立页码
+let upSort = {key: null, asc: false};     // null = 默认（服务端成交额降序）
+let downSort = {key: null, asc: false};
+
+/* 列定义：[key, 标签, 对齐, 可排序] */
+const LIMIT_COLS = [
+    [null, '股票', 'left', false],
+    ['price', '现价', 'right', true],
+    ['pct', '涨跌幅', 'right', true],
+    ['chg', '涨跌额', 'right', true],
+    ['amount_yi', '成交额', 'right', true],
+    ['turnover', '换手率', 'right', true],
+    ['market', '板块', 'right', true],
+];
+
+function pctCell(p) {
+    return p == null ? '--' : `<span class="${p >= 0 ? 'rise' : 'fall'}">${p >= 0 ? '+' : ''}${p.toFixed(2)}%</span>`;
+}
+
+/* 排序：null 值恒排末尾（升序最前/降序最后）；板块按中文名排序实现分组 */
+function sortRows(rows, sort) {
+    if (!sort.key) return rows;
+    const key = sort.key, asc = sort.asc;
+    return [...rows].sort((a, b) => {
+        const va = a[key], vb = b[key];
+        if (va == null && vb == null) return 0;
+        if (va == null) return 1;          // null 恒排末尾
+        if (vb == null) return -1;
+        let cmp;
+        if (typeof va === 'string' || typeof vb === 'string') {
+            cmp = String(va).localeCompare(String(vb), 'zh');
+        } else {
+            cmp = va - vb;
+        }
+        return asc ? cmp : -cmp;
+    });
+}
+
+/* 表头：可排序列点击排序，当前排序列蓝色高亮 + 箭头 */
+function theadHtml(kind) {
+    const sort = kind === 'up' ? upSort : downSort;
+    return LIMIT_COLS.map(([k, label, align, sortable]) => {
+        const active = sortable && sort.key === k;
+        const arrow = active ? (sort.asc ? ' ↑' : ' ↓') : '';
+        const style = `text-align:${align};${sortable ? 'cursor:pointer;user-select:none;' : ''}`
+            + `${active ? 'color:#1e88e5;font-weight:600;' : ''}`;
+        const click = sortable ? ` onclick="goSort('${kind}','${k}')"` : '';
+        return `<th style="${style}"${click}>${label}${arrow}</th>`;
+    }).join('');
+}
+
+function limitRows(rows, kind) {
+    if (!rows || !rows.length) return '<div class="tip" style="padding:18px;text-align:center">今日暂无数据</div>';
+    return `<table>
+        <thead><tr>${theadHtml(kind)}</tr></thead>
+        <tbody>${rows.map(r => `<tr onclick="window.open('/stock_kline/${r.code}')" style="cursor:pointer"
+            onmouseover="this.style.background='#f5f9ff'" onmouseout="this.style.background=''">
+            <td><b>${r.name}</b> <span style="color:#78909c;font-size:12px">${r.code}</span></td>
+            <td style="text-align:right">${r.price != null ? r.price.toFixed(2) : '--'}</td>
+            <td style="text-align:right">${pctCell(r.pct)}</td>
+            <td style="text-align:right;color:${r.chg >= 0 ? '#e53935' : '#2e7d32'}">${r.chg != null ? (r.chg >= 0 ? '+' : '') + r.chg.toFixed(2) : '--'}</td>
+            <td style="text-align:right">${r.amount_yi != null ? r.amount_yi.toFixed(2) + '亿' : '--'}</td>
+            <td style="text-align:right">${r.turnover != null ? r.turnover.toFixed(2) + '%' : '--'}</td>
+            <td style="text-align:right;color:#78909c">${r.market}</td>
+        </tr>`).join('')}</tbody></table>`;
+}
+
+/* 三态排序：新列默认降序 → 同列升序 → 再点取消（恢复默认成交额降序） */
+function goSort(kind, key) {
+    const sort = kind === 'up' ? upSort : downSort;
+    if (sort.key === key) {
+        if (!sort.asc) { sort.asc = true; }
+        else { sort.key = null; sort.asc = false; }
+    } else {
+        sort.key = key; sort.asc = false;
+    }
+    if (kind === 'up') { upPage = 1; renderSide('up'); }
+    else { downPage = 1; renderSide('down'); }
+}
+
+/* 页码序列：当前页 ±2 窗口 + 首尾页，间隔处折叠为省略号 */
+function pageList(cur, total) {
+    const out = [];
+    for (let i = 1; i <= total; i++) {
+        if (i === 1 || i === total || Math.abs(i - cur) <= 2) out.push(i);
+        else if (out[out.length - 1] !== '…') out.push('…');
+    }
+    return out;
+}
+
+/* 生成分页条：首页/上一页/页码窗口/下一页/末页，含禁用与当前页状态 */
+function buildPager(totalItems, page, goFn) {
+    const pages = Math.max(1, Math.ceil(totalItems / PAGE_SIZE));
+    const info = `<span class="pg-info">共 ${totalItems} 条</span>`;
+    if (pages <= 1) return info;
+    const btn = (label, target, opts = {}) => {
+        const st = opts.disabled ? 'disabled' : (opts.active ? 'class="active"' : '');
+        return `<button ${st} ${opts.disabled ? '' : `onclick="${goFn}(${target})"`}>${label}</button>`;
+    };
+    return info
+        + btn('« 首页', 1, {disabled: page === 1})
+        + btn('‹', page - 1, {disabled: page === 1})
+        + pageList(page, pages).map(p => p === '…'
+            ? `<span class="pg-ellipsis">…</span>`
+            : btn(p, p, {active: p === page})).join('')
+        + btn('›', page + 1, {disabled: page === pages})
+        + btn('末页 »', pages, {disabled: page === pages});
+}
+
+/* 渲染某一侧榜单：排序 → 分页切片 → 分页条 */
+function renderSide(kind) {
+    const rows = kind === 'up' ? limitData.up : limitData.down;
+    const page = kind === 'up' ? upPage : downPage;
+    const sort = kind === 'up' ? upSort : downSort;
+    const sorted = sortRows(rows, sort);
+    const slice = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+    $(kind === 'up' ? '#upBody' : '#downBody').html(limitRows(slice, kind));
+    $(kind === 'up' ? '#upPager' : '#downPager').html(
+        buildPager(rows.length, page, kind === 'up' ? 'goUpPage' : 'goDownPage'));
+}
+function goUpPage(p)   { upPage = p;   renderSide('up');   $('#upBody').scrollTop(0); }
+function goDownPage(p) { downPage = p; renderSide('down'); $('#downBody').scrollTop(0); }
+
+function loadLimit() {
+    $('#upBody').html('<div class="loading" style="padding:18px;text-align:center">加载中...</div>');
+    $('#downBody').html('<div class="loading" style="padding:18px;text-align:center">加载中...</div>');
+    $('#upPager, #downPager').empty();
+    $.getJSON('/api/market/limit_rank').done(function(res) {
+        if (res.code !== 0) {
+            $('#limitSummary').html(`<span style="color:#e53935">${res.msg}</span>`);
+            $('#upBody, #downBody').empty();
+            return;
+        }
+        limitData = res.data;
+        upPage = 1; downPage = 1;   // 新数据重置页码
+        upSort = {key: null, asc: false}; downSort = {key: null, asc: false};
+        const d = limitData;
+        const upAmt = d.up.reduce((s, r) => s + (r.amount_yi || 0), 0);
+        const downAmt = d.down.reduce((s, r) => s + (r.amount_yi || 0), 0);
+        $('#limitMeta').text(`${d.source} · 快照时间 ${d.tick || '--'}`);
+        $('#limitSummary').html(`
+            <div>🔥 涨停 <b style="color:#e53935;font-size:22px">${d.up.length}</b> 只</div>
+            <div>🧊 跌停 <b style="color:#2e7d32;font-size:22px">${d.down.length}</b> 只</div>
+            <div>涨停成交额 <b style="color:#e53935">${upAmt.toFixed(1)}</b> 亿</div>
+            <div>跌停成交额 <b style="color:#2e7d32">${downAmt.toFixed(1)}</b> 亿</div>
+            <div class="tip">覆盖沪主板 / 深主板 / 创业板 / 科创板（不含北交所）· 按交易所涨跌幅限制价精确判定</div>`);
+        $('#upCount').text(`${d.up.length} 只 · 默认按成交额排序`);
+        $('#downCount').text(`${d.down.length} 只 · 默认按成交额排序`);
+        renderSide('up');
+        renderSide('down');
+    }).fail(function() {
+        $('#limitSummary').html('<span style="color:#e53935">加载失败，请刷新重试</span>');
+        $('#upBody, #downBody').empty();
+    });
+}
+
+$(function() { loadLimit(); });
+</script>
+{% endblock %}

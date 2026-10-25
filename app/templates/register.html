@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}注册 - QuantDesk{% endblock %}
+{% block content %}
+<div class="auth-box" style="width:520px">
+    <h2>注册新账号</h2>
+    <form method="post" action="/register">
+        <div class="form-group"><label>真实姓名</label>
+            <input type="text" name="real_name" required value="{{ form.get('real_name','') }}"></div>
+        <div class="form-group"><label>身份证号（18位）</label>
+            <input type="text" name="id_card" maxlength="18" required value="{{ form.get('id_card','') }}"></div>
+        <div class="form-group"><label>生日</label>
+            <input type="date" name="birthday" required></div>
+        <div class="form-group"><label>手机号（11位）</label>
+            <input type="text" name="phone" maxlength="11" required value="{{ form.get('phone','') }}"></div>
+        <div class="form-group"><label>银行卡号</label>
+            <input type="text" name="bank_card" required value="{{ form.get('bank_card','') }}"></div>
+        <div class="form-group"><label>省份</label>
+            <select name="province" required>
+                <option value="">请选择省份</option>
+                {% for p in provinces %}<option value="{{ p }}" {{ 'selected' if form.get('province')==p else '' }}>{{ p }}</option>{% endfor %}
+            </select></div>
+        <div class="form-group"><label>职业</label>
+            <input type="text" name="occupation" required value="{{ form.get('occupation','') }}"></div>
+        <div class="form-group"><label>详细地址</label>
+            <input type="text" name="address" value="{{ form.get('address','') }}"></div>
+        <div class="form-group"><label>密码（至少6位）</label>
+            <input type="password" name="password" required></div>
+        <div class="form-group"><label>确认密码</label>
+            <input type="password" name="confirm_password" required></div>
+        <div class="form-actions"><button class="btn" type="submit">注 册</button></div>
+    </form>
+    <div class="auth-links"><a href="/login">已有账号？去登录</a></div>
+</div>
+{% endblock %}

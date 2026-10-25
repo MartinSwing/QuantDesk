@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}财报日历 - QuantDesk{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="page-title">财报日历 · 业绩快报</div>
+
+    <div class="card" style="margin-bottom:14px">
+        <h3>📊 业绩快报 <span class="tip" id="expPeriod" style="display:inline"></span></h3>
+        <div class="tip">营收/净利润（亿元）及同比增速，点击查看个股K线</div>
+        <div id="expTable"><div class="loading">加载中...</div></div>
+    </div>
+
+    <div class="card">
+        <h3>📅 未来财报披露日历 <span class="tip">近 60 天预约披露</span></h3>
+        <div id="discTable"><div class="loading">加载中...</div></div>
+    </div>
+</div>
+
+<script>
+function loadEarnings() {
+    $.getJSON('/api/market/earnings').done(function(res) {
+        if (res.code !== 0) { $('#expTable').html('<div class="tip">加载失败</div>'); return; }
+        const d = res.data;
+        $('#expPeriod').text(`（报告期 ${d.period.slice(0,4)}-${d.period.slice(4,6)}-${d.period.slice(6,8)}）`);
+
+        const yoy = v => v == null ? '--' : `<span class="${v >= 0 ? 'rise' : 'fall'}">${v >= 0 ? '+' : ''}${v.toFixed(2)}%</span>`;
+        $('#expTable').html(d.expresses.length ? `<div style="overflow-x:auto"><table class="styled-table" style="width:100%">
+            <thead><tr><th>股票</th><th>公告日</th><th>营业收入(亿)</th><th>营收同比</th><th>净利润(亿)</th><th>利润同比</th><th>EPS</th></tr></thead>
+            <tbody>${d.expresses.map(r => `<tr style="cursor:pointer" onclick="window.open('/stock_kline/${r.ts_code}')"
+                onmouseover="this.style.background='#f5f9ff'" onmouseout="this.style.background=''">
+                <td><b>${r.ts_code}</b></td><td>${r.ann_date}</td>
+                <td>${r.revenue ?? '--'}</td><td>${yoy(r.revenue_yoy)}</td>
+                <td>${r.net_profit ?? '--'}</td><td>${yoy(r.net_profit_yoy)}</td><td>${r.eps ?? '--'}</td></tr>`).join('')}</tbody></table></div>`
+            : '<div class="empty-tip">暂无业绩快报数据</div>');
+
+        $('#discTable').html(d.disclosures.length ? `<div style="overflow-x:auto"><table class="styled-table" style="width:100%">
+            <thead><tr><th>股票</th><th>预约披露日</th><th>报告期截止</th></tr></thead>
+            <tbody>${d.disclosures.map(r => `<tr><td><b>${r.ts_code}</b></td><td>${r.ann_date}</td><td>${r.end_date}</td></tr>`).join('')}</tbody></table></div>`
+            : '<div class="empty-tip">近期暂无预约披露安排</div>');
+    }).fail(function() { $('#expTable').html('<div class="tip">加载失败，请刷新重试</div>'); });
+}
+$(function() { loadEarnings(); });
+</script>
+{% endblock %}

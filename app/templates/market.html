@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}行情中心 - QuantDesk{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="page-title">行情中心 · 核心指数
+        <a class="btn" href="/heatmap" style="float:right;text-decoration:none" title="查看全市场行业涨跌热力图">🔥 行业热力图</a>
+    </div>
+    <div id="indexCards" style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:18px">
+        <div class="card" style="flex:1;min-width:170px"><div class="loading">指数加载中...</div></div>
+    </div>
+
+    <div class="card">
+        <h3 id="klineTitle">指数K线</h3>
+        <div style="margin-bottom:10px" id="indexTabs">
+            <select id="indexSelect" onchange="renderKline(true)"></select>
+            <select id="daysSelect" onchange="renderKline(true)">
+                <option value="30">近30天</option>
+                <option value="60">近60天</option>
+                <option value="120" selected>近120天</option>
+                <option value="183">近半年</option>
+                <option value="250">近一年</option>
+                <option value="1095">近3年</option>
+                <option value="1825">近5年</option>
+            </select>
+            <button type="button" class="zoom-btn" onclick="zoomIn()" title="放大：查看更接近当前时间的走势">＋</button>
+            <button type="button" class="zoom-btn" onclick="zoomOut()" title="缩小：查看更久远的历史走势">－</button>
+            <span class="tip" style="display:inline" id="klineSource"></span>
+        </div>
+        <div id="klineChart" style="height:420px"></div>
+    </div>
+
+    <div class="card" style="margin-top:18px">
+        <h3>📰 24/7 全球财经快讯
+            <span class="tip" style="display:inline" id="newsSource"></span>
+            <button type="button" class="zoom-btn" onclick="loadNews()" title="立即刷新快讯">⟳</button>
+            <label style="float:right;font-weight:normal;font-size:14px;color:#78909c;cursor:pointer">
+                <input type="checkbox" id="newsAutoRefresh" checked> 每60秒自动刷新
+            </label>
+        </h3>
+        <div id="newsList" style="max-height:420px;overflow-y:auto;line-height:1.6">
+            <div class="loading">快讯加载中...</div>
+        </div>
+    </div>
+</div>
+
+<script>
+let klineChart = null;
+let viewSpan = null;      // 当前可视区间的K线根数
+let pendingSpan = null;   // 升档重拉数据后要应用的目标跨度
+const DAY_TIERS = [30, 60, 120, 183, 250, 1095, 1825]; // 与时间筛选选项一一对应
+
+function loadIndexes() {
+    $.getJSON('/api/market/indexes').done(function(res) {
+        const box = $('#indexCards');
+        if (res.code !== 0 || res.data.length === 0) {
+            box.html('<div class="card">指数数据暂不可用</div>'); return;
+        }
+        box.html(res.data.map(i => {
+            const cls = i.pct_change >= 0 ? 'rise' : 'fall';
+            const sign = i.pct_change >= 0 ? '+' : '';
+            return `<a class="card card-link" href="/index_kline/${i.index_code}" style="flex:1;min-width:170px" title="点击查看${i.index_name}详情">
+                <h3>${i.index_name} <span style="float:right;color:#b0bec5">${i.source==='tushare'?'实时':'缓存'}</span></h3>
+                <div style="font-size:24px;font-weight:bold">${i.close}</div>
+                <div class="${cls}" style="margin-top:4px">${sign}${i.pct_change}%</div>
+                <div style="color:#1e88e5;margin-top:8px">查看详情 →</div>
+            </a>`;
+        }).join(''));
+    }).fail(function() {
+        $('#indexCards').html('<div class="card">指数加载失败，请刷新重试</div>');
+    });
+}
+
+function loadIndexList() {
+    $.getJSON('/api/market/indexes/list').done(function(res) {
+        $('#indexSelect').html(res.data.map(i =>
+            `<option value="${i.index_code}">${i.index_name}</option>`).join(''));
+        renderKline();
+    });
+}
+
+function renderKline(reset) {
+    const code = $('#indexSelect').val(), days = $('#daysSelect').val();
+    if (reset) viewSpan = null;
+    $.ajax({url: '/api/market/index_kline', type: 'POST', contentType: 'application/json',
+        data: JSON.stringify({index_code: code, days: days})}).done(function(res) {
+        if (res.code !== 0 || res.data.length === 0) return;
+        const data = res.data;
+        $('#klineSource').text(` 数据截至 ${data[data.length-1].date}`);
+        klineChart = klineChart || echarts.init($('#klineChart')[0]);
+        const option = {
+            tooltip: {trigger: 'axis'},
+            grid: {left: 60, right: 60, top: 30, bottom: 60},
+            xAxis: {type: 'category', data: data.map(d => d.date)},
+            yAxis: [{scale: true}, {scale: true}],
+            dataZoom: [{type: 'inside'}, {type: 'slider', height: 20, bottom: 10}],
+            series: [
+                {name: 'K线', type: 'candlestick', data: data.map(d => [d.open, d.close, d.low, d.high]),
+                 itemStyle: {color: '#e53935', color0: '#2e7d32', borderColor: '#e53935', borderColor0: '#2e7d32'}},
+                {name: '收盘价', type: 'line', yAxisIndex: 0, data: data.map(d => d.close),
+                 showSymbol: false, lineStyle: {opacity: 0.3}}
+            ]
+        };
+        klineChart.setOption(option, true);
+        klineChart.off('datazoom');
+        klineChart.on('datazoom', syncSpan);
+        // 渲染后应用当前跨度（首次加载=全部；缩放触发的升档重拉=目标跨度）
+        setSpan(pendingSpan || viewSpan || data.length);
+        pendingSpan = null;
+    });
+}
+
+/* 按目标根数设置可视区间（右端锚定最新一根，动画平滑过渡） */
+function setSpan(span) {
+    const total = klineChart.getOption().xAxis[0].data.length;
+    span = Math.max(10, Math.min(Math.round(span), total));
+    viewSpan = span;
+    const start = Math.max(0, 100 - (span / total) * 100);
+    klineChart.dispatchAction({type: 'dataZoom', start: start, end: 100});
+}
+
+/* 用户手动拖动缩放条时，同步记录当前跨度 */
+function syncSpan() {
+    const opt = klineChart.getOption();
+    const total = opt.xAxis[0].data.length;
+    const dz = opt.dataZoom[0];
+    viewSpan = Math.max(10, Math.round((dz.end - dz.start) / 100 * total));
+}
+
+/* ＋ 放大：可视区间收窄，聚焦更接近当前时间的走势 */
+function zoomIn() {
+    if (!klineChart) return;
+    if (viewSpan == null) syncSpan();
+    setSpan(viewSpan / 1.5);
+}
+
+/* － 缩小：可视区间扩大，回看更久远的历史；超出已加载数据时自动升档重拉 */
+function zoomOut() {
+    if (!klineChart) return;
+    if (viewSpan == null) syncSpan();
+    const target = Math.round(viewSpan * 1.5);
+    const total = klineChart.getOption().xAxis[0].data.length;
+    const idx = DAY_TIERS.indexOf(Number($('#daysSelect').val()));
+    if (target > total - 2 && idx > -1 && idx < DAY_TIERS.length - 1) {
+        $('#daysSelect').val(DAY_TIERS[idx + 1]);
+        pendingSpan = target;
+        renderKline(false);
+    } else {
+        setSpan(target);
+    }
+}
+
+/* ---------- 24/7 快讯 ---------- */
+let newsTimer = null;
+
+function loadNews() {
+    $.getJSON('/api/market/news?limit=60').done(function(res) {
+        if (res.code !== 0 || res.data.items.length === 0) {
+            $('#newsList').html('<div class="loading">快讯暂不可用，请稍后重试</div>');
+            return;
+        }
+        $('#newsSource').text(` 来源：${res.data.source} · 共${res.data.items.length}条`);
+        $('#newsList').html(res.data.items.map(n => {
+            const t = n.time ? n.time.slice(5, 16) : '';   // MM-DD HH:mm
+            const summary = n.summary && n.summary !== n.title
+                ? `<div style="color:#546e7a;font-size:14px;margin-top:2px">${n.summary}</div>` : '';
+            const body = `<b>${n.title}</b>${summary}`;
+            return n.url
+                ? `<div class="news-item" style="padding:7px 4px;border-bottom:1px dashed #eceff1">
+                     <span style="color:#90a4ae;font-size:13px;margin-right:8px">🕐 ${t}</span>
+                     <a href="${n.url}" target="_blank" style="color:inherit;text-decoration:none">${body}</a>
+                   </div>`
+                : `<div class="news-item" style="padding:7px 4px;border-bottom:1px dashed #eceff1">
+                     <span style="color:#90a4ae;font-size:13px;margin-right:8px">🕐 ${t}</span>${body}
+                   </div>`;
+        }).join(''));
+    }).fail(function() {
+        $('#newsList').html('<div class="loading">快讯加载失败，请点击 ⟳ 重试</div>');
+    });
+}
+
+function setupNewsAutoRefresh() {
+    if (newsTimer) clearInterval(newsTimer);
+    newsTimer = setInterval(function() {
+        if ($('#newsAutoRefresh').is(':checked')) loadNews();
+    }, 60000);
+}
+
+$(function() { loadIndexes(); loadIndexList(); loadNews(); setupNewsAutoRefresh(); });
+</script>
+{% endblock %}

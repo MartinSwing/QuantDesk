@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block title %}自选股 - QuantDesk{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="page-title">我的自选股</div>
+
+    <!-- 提醒触发通知 -->
+    <div id="alertBanner" style="display:none;border-left:4px solid #f9a825" class="card"></div>
+
+    <div class="card">
+        <h3>🔔 我的价格提醒</h3>
+        <div id="alertList"><div class="loading">加载中...</div></div>
+    </div>
+
+    <div class="card">
+        <table>
+            <thead><tr>
+                <th>股票</th><th>现价</th><th>涨跌幅</th><th>最高</th><th>最低</th><th>数据来源</th><th>操作</th>
+            </tr></thead>
+            <tbody id="favList"><tr><td colspan="7" class="loading">加载中...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+
+<!-- 提醒设置弹窗 -->
+<div class="modal-mask" id="alertMask" onclick="if(event.target===this)closeAlertModal()">
+    <div class="modal">
+        <div class="modal-head"><h3>设置价格提醒</h3><span class="x" onclick="closeAlertModal()">×</span></div>
+        <div class="modal-body">
+            <div class="form-group"><label>股票</label><input class="readonly" id="alStock" readonly></div>
+            <div class="form-group"><label>提醒条件</label>
+                <select id="alCond">
+                    <option value="gte">价格 涨到</option>
+                    <option value="lte">价格 跌到</option>
+                </select></div>
+            <div class="form-group"><label>目标价格（元）</label>
+                <input type="number" id="alPrice" step="0.01" min="0.01" placeholder="如 25.00"></div>
+            <div class="hint">满足条件后将在打开系统时弹出通知</div>
+        </div>
+        <div class="modal-foot">
+            <button class="btn btn-gray" onclick="closeAlertModal()">取消</button>
+            <button class="btn" onclick="submitAlert()">确认设置</button>
+        </div>
+    </div>
+</div>
+
+<script>
+let alertCode = '';
+
+function loadList() {
+    $.getJSON('/api/favorite/list').done(function(res) {
+        const box = $('#favList');
+        if (res.code !== 0 || res.data.length === 0) {
+            box.html('<tr><td colspan="7" class="empty-tip">暂无自选股，去<a href="/market" style="color:#1e88e5">行情中心</a>添加</td></tr>');
+            return;
+        }
+        box.html(res.data.map(s => {
+            const cls = s.pct_change >= 0 ? 'rise' : 'fall';
+            const sign = s.pct_change >= 0 ? '+' : '';
+            return `<tr>
+                <td><a href="/stock_kline/${s.stock_code}" style="color:#1e88e5;text-decoration:none">${s.stock_code}<br><span style="color:#78909c">${s.stock_name}</span></a></td>
+                <td>${s.current_price ?? '--'}</td>
+                <td class="${cls}">${sign}${s.pct_change}%</td>
+                <td>${s.high ?? '--'}</td><td>${s.low ?? '--'}</td>
+                <td style="color:#b0bec5">${s.source === 'tushare' ? '实时' : '缓存'}</td>
+                <td>
+                    <button class="btn btn-gray btn-sm" onclick="openAlertModal('${s.stock_code}','${s.stock_name}')">🔔 提醒</button>
+                    <button class="btn btn-gray btn-sm" onclick="removeFav('${s.stock_code}')">移除</button>
+                </td>
+            </tr>`;
+        }).join(''));
+    }).fail(function() {
+        $('#favList').html('<tr><td colspan="7" class="empty-tip">加载失败</td></tr>');
+    });
+}
+function removeFav(code) {
+    $.ajax({url: '/api/favorite/remove', type: 'POST', contentType: 'application/json',
+        data: JSON.stringify({stock_code: code})}).done(loadList);
+}
+
+/* ---------- 价格提醒 ---------- */
+function openAlertModal(code, name) {
+    alertCode = code;
+    $('#alStock').val(`${name}（${code}）`);
+    $('#alPrice').val('');
+    $('#alertMask').addClass('show');
+}
+function closeAlertModal() { $('#alertMask').removeClass('show'); }
+function submitAlert() {
+    const price = $('#alPrice').val();
+    if (!price || Number(price) <= 0) { alert('请输入合法的目标价格'); return; }
+    $.ajax({url: '/api/alert/add', type: 'POST', contentType: 'application/json',
+        data: JSON.stringify({stock_code: alertCode, condition: $('#alCond').val(), target_price: Number(price)})
+    }).done(function(res) {
+        if (res.code === 0) { closeAlertModal(); loadAlerts(); }
+        else alert(res.msg);
+    });
+}
+
+function loadAlerts() {
+    $.getJSON('/api/alert/list').done(function(res) {
+        const rows = res.data || [];
+        if (!rows.length) {
+            $('#alertList').html('<div class="tip">暂无提醒。点击下方股票行的「🔔 提醒」设置涨到/跌到通知</div>');
+            return;
+        }
+        $('#alertList').html(rows.map(a => {
+            const desc = a.cond === 'gte' ? '涨到' : '跌到';
+            const st = a.status === 'active' ? '<span style="color:#1e88e5">监控中</span>'
+                     : a.status === 'triggered' ? '<span class="rise">已触发</span>' : '<span style="color:#90a4ae">已取消</span>';
+            return `<div style="display:flex;gap:14px;align-items:center;padding:7px 2px;border-bottom:1px dashed #eceff1">
+                <b>${a.stock_name || a.stock_code}</b>
+                <span style="color:#546e7a">${desc} <b>${Number(a.target_price)}</b> 元</span>
+                ${st}
+                <span style="color:#b0bec5;font-size:13px">${(a.triggered_at || a.created_at || '').slice(0, 16)}</span>
+                ${a.status === 'active' ? `<button class="btn btn-gray btn-sm" style="margin-left:auto" onclick="cancelAlert(${a.id})">取消</button>` : ''}
+            </div>`;
+        }).join(''));
+    });
+}
+function cancelAlert(id) {
+    $.ajax({url: '/api/alert/cancel', type: 'POST', contentType: 'application/json',
+        data: JSON.stringify({id})}).done(loadAlerts);
+}
+
+/* 惰性触发检查：进页面即查一次 */
+function checkAlerts() {
+    $.getJSON('/api/alert/check').done(function(res) {
+        const hits = res.data || [];
+        if (!hits.length) return;
+        $('#alertBanner').show().html(
+            '<h3>🔔 价格提醒触发</h3>' + hits.map(h =>
+                `<div style="padding:4px 0"><b>${h.stock_name || h.stock_code}</b> 已${h.cond === 'gte' ? '涨到' : '跌到'} ` +
+                `<b>${Number(h.target_price)}</b> 元，当前价 <b class="${h.current_price >= h.target_price ? 'rise' : 'fall'}">${h.current_price}</b> 元 ` +
+                `<a href="/stock_kline/${h.stock_code}" style="color:#1e88e5">查看 →</a></div>`).join(''));
+        loadAlerts();
+    });
+}
+
+$(function() { loadList(); loadAlerts(); checkAlerts(); });
+</script>
+{% endblock %}

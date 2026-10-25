@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block head %}<script src="{{ url_for('static', filename='js/indicators.js') }}"></script>{% endblock %}
+{% block title %}指数详情 - QuantDesk{% endblock %}
+{% block content %}
+<div class="container">
+    <div style="margin-bottom:12px">
+        <a href="/market" style="color:#1e88e5;text-decoration:none">← 返回行情中心</a>
+    </div>
+    <div class="page-title" id="pageTitle">指数详情 · {{ index_code }}</div>
+
+    <div class="card">
+        <div style="display:flex;gap:28px;flex-wrap:wrap;align-items:center">
+            <div>
+                <div style="color:#90a4ae">最新点位</div>
+                <div id="lastClose" style="font-size:32px;font-weight:bold">--</div>
+                <div id="lastChange" style="margin-top:2px">--</div>
+            </div>
+            <div style="display:flex;gap:26px;flex-wrap:wrap" id="statBox">
+                <div><div style="color:#90a4ae">今开</div><div id="stOpen">--</div></div>
+                <div><div style="color:#90a4ae">最高</div><div id="stHigh">--</div></div>
+                <div><div style="color:#90a4ae">最低</div><div id="stLow">--</div></div>
+                <div><div style="color:#90a4ae">昨收</div><div id="stPre">--</div></div>
+                <div><div style="color:#90a4ae">振幅</div><div id="stAmp">--</div></div>
+            </div>
+            <div style="margin-left:auto;text-align:right;color:#90a4ae" id="dataTip"></div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+            <h3 id="klineTitle" style="margin:0">指数K线</h3>
+            <select id="daysSelect" onchange="loadKline()">
+                <option value="30">近30天</option>
+                <option value="60">近60天</option>
+                <option value="120" selected>近120天</option>
+                <option value="183">近半年</option>
+                <option value="250">近一年</option>
+                <option value="1095">近3年</option>
+                <option value="1825">近5年</option>
+            </select>
+            <span style="margin-left:auto;color:#90a4ae;font-size:15px">副图指标</span>
+            <select id="subSelect" onchange="renderDayChart()">
+                <option value="amount" selected>成交额</option>
+                <option value="volume">成交量</option>
+                <option value="macd">MACD</option>
+                <option value="kdj">KDJ</option>
+                <option value="rsi">RSI</option>
+                <option value="boll">BOLL（叠加主图）</option>
+            </select>
+        </div>
+        <div id="klineChart" style="height:420px"></div>
+    </div>
+
+    <div class="card">
+        <h3>近10个交易日明细</h3>
+        <table>
+            <thead><tr><th>日期</th><th>开盘</th><th>最高</th><th>最低</th><th>收盘</th><th>涨跌额</th><th>涨跌幅</th></tr></thead>
+            <tbody id="detailRows"><tr><td colspan="7" class="loading">加载中...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+const INDEX_CODE = '{{ index_code }}';
+let klineChart = null;
+const INDEX_NAMES = {};
+
+function loadName() {
+    $.getJSON('/api/market/indexes/list').done(function(res) {
+        if (res.code !== 0) return;
+        res.data.forEach(i => INDEX_NAMES[i.index_code] = i.index_name);
+        const name = INDEX_NAMES[INDEX_CODE] || INDEX_CODE;
+        $('#klineTitle').text(`${name} K线`);
+        loadKline();
+    }).fail(function() { loadKline(); });
+}
+
+let dayData = null;   // 缓存最近一次接口数据，切副图无需重新请求
+
+function loadKline() {
+    const days = $('#daysSelect').val();
+    $.ajax({url: '/api/market/indicators', type: 'POST', contentType: 'application/json',
+        data: JSON.stringify({code: INDEX_CODE, kind: 'index', days: days})}).done(function(res) {
+        if (res.code !== 0 || !res.data || !res.data.kline.length) {
+            $('#detailRows').html('<tr><td colspan="7" class="empty-tip">暂无数据</td></tr>');
+            return;
+        }
+        dayData = res.data;
+        renderDayChart();
+        const data = dayData.kline;
+        const last = data[data.length - 1];
+        const name = INDEX_NAMES[INDEX_CODE] || INDEX_CODE;
+        const cls = last.pct_change >= 0 ? 'rise' : 'fall';
+        const sign = last.pct_change >= 0 ? '+' : '';
+
+        $('#pageTitle').text(`指数详情 · ${name}（${INDEX_CODE}）`);
+        $('#lastClose').text(last.close).attr('class', cls);
+        $('#lastChange').text(`${sign}${last.change}　${sign}${last.pct_change}%`).attr('class', cls);
+        $('#stOpen').text(last.open);
+        $('#stHigh').text(last.high);
+        $('#stLow').text(last.low);
+        $('#stPre').text((last.close - last.change).toFixed(2));
+        const amp = last.low > 0 ? ((last.high - last.low) / last.low * 100) : 0;
+        $('#stAmp').text(amp.toFixed(2) + '%');
+        $('#dataTip').html(`数据截至 ${last.date}`);
+
+        $('#detailRows').html(data.slice(-10).reverse().map(d => {
+            const c = d.pct_change >= 0 ? 'rise' : 'fall';
+            const s = d.pct_change >= 0 ? '+' : '';
+            return `<tr>
+                <td>${d.date}</td><td>${d.open}</td><td>${d.high}</td><td>${d.low}</td>
+                <td>${d.close}</td><td class="${c}">${s}${d.change}</td>
+                <td class="${c}">${s}${d.pct_change}%</td>
+            </tr>`;
+        }).join(''));
+    }).fail(function() {
+        $('#detailRows').html('<tr><td colspan="7" class="empty-tip">加载失败，请刷新重试</td></tr>');
+    });
+}
+
+function renderDayChart() {
+    if (!dayData) return;
+    const data = dayData.kline, ind = dayData.indicators;
+    klineChart = klineChart || echarts.init($('#klineChart')[0]);
+    let option = {
+        tooltip: {trigger: 'axis'},
+        xAxis: {type: 'category', data: data.map(d => d.date)},
+        yAxis: [{scale: true}],
+        series: [
+            {name: 'K线', type: 'candlestick', data: data.map(d => [d.open, d.close, d.low, d.high]),
+             itemStyle: {color: '#e53935', color0: '#2e7d32', borderColor: '#e53935', borderColor0: '#2e7d32'}},
+        ]
+    };
+    option = IND.apply(option, data, ind, $('#subSelect').val(), '亿手');
+    klineChart.setOption(option, true);
+    klineChart.resize();
+}
+
+$(function() { loadName(); });
+window.addEventListener('resize', function() { klineChart && klineChart.resize(); });
+</script>
+{% endblock %}

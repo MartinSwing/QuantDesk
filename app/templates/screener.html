@@ -1,0 +1,259 @@
+{% extends "base.html" %}
+{% block title %}选股 - QuantDesk{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="page-title">选股 <span class="tip" id="scMeta"></span>
+        <button type="button" class="btn btn-sm" style="float:right" onclick="doScreen()">🔄 刷新</button>
+    </div>
+
+    <!-- 筛选条件 -->
+    <div class="card" style="margin-bottom:14px">
+        <h3>筛选条件 <span class="tip" style="display:inline">（填任意一个或多个条件，留空即不限）</span></h3>
+        <div id="filterBox" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px 18px;font-size:14px">
+            <div style="display:flex;align-items:center;gap:8px">
+                <label style="width:76px;color:#546e7a">行业</label>
+                <select id="f_industry" style="flex:1;padding:5px 8px;border:1px solid #cfd8dc;border-radius:4px">
+                    <option value="">全部行业</option>
+                </select>
+            </div>
+        </div>
+        <div style="margin-top:14px">
+            <button class="btn" onclick="doScreen()">🔍 开始筛选</button>
+            <button class="btn" style="background:#eceff1;color:#455a64" onclick="resetFilters()">重置</button>
+            <span class="tip" style="margin-left:12px" id="scHint">首次进入自动加载全部 A 股快照</span>
+        </div>
+    </div>
+
+    <!-- 结果 -->
+    <div class="card">
+        <h3>筛选结果 <span class="tip" id="scCount" style="display:inline"></span></h3>
+        <div class="tip">点击列头排序（↑升序 ↓降序）· 点击个股行查看K线详情</div>
+        <div id="scTable"><div class="loading">加载中...</div></div>
+    </div>
+
+    <!-- 多因子打分 -->
+    <div class="card" style="margin-top:14px">
+        <h3>🎯 多因子选股打分 <span class="tip" style="display:inline">估值(PE/PB) + 价值(股息率) + 动量(涨跌幅) 加权排名，得分 0~100</span></h3>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
+            <div class="form-group" style="width:120px"><label>估值·PE 权重</label><input type="number" id="fw_pe" value="25" min="0" max="100"></div>
+            <div class="form-group" style="width:120px"><label>估值·PB 权重</label><input type="number" id="fw_pb" value="25" min="0" max="100"></div>
+            <div class="form-group" style="width:120px"><label>价值·股息率</label><input type="number" id="fw_dv" value="25" min="0" max="100"></div>
+            <div class="form-group" style="width:120px"><label>动量·涨跌幅</label><input type="number" id="fw_pct" value="25" min="0" max="100"></div>
+            <div class="form-group" style="width:160px"><label>行业（可选）</label><select id="fw_industry"><option value="">全市场</option></select></div>
+            <button class="btn" id="factorRun">开始打分</button>
+        </div>
+        <div class="tip" id="factorMeta" style="margin-bottom:8px">权重自动归一化；缺失因子记 0 分（如亏损股无 PE）。</div>
+        <div id="factorTable"><div class="empty-tip">设置权重后点击「开始打分」查看排名</div></div>
+    </div>
+</div>
+
+<script>
+let scData = null;      // {trade_date, total, total_market, truncated, rows, industries}
+let sortKey = null;     // null = 未排序（服务端默认成交额降序）
+let sortAsc = false;
+
+/* 筛选条件定义：[key, 标签, 单位] */
+const NUM_COLS = [
+    ['pct',    '涨跌幅', '%'],
+    ['chg',    '涨跌额', '元'],
+    ['price',  '价格',   '元'],
+    ['mv',     '市值',   '亿'],
+    ['pe',     'PE(TTM)',''],
+    ['pb',     'PB',     ''],
+    ['dv',     '股息率', '%'],
+    ['vol',    '成交量', '万手'],
+    ['amount', '成交额', '亿'],
+];
+
+/* 初始化筛选输入框 */
+(function initFilters() {
+    const box = $('#filterBox');
+    NUM_COLS.forEach(([k, label, unit]) => {
+        box.append(`<div style="display:flex;align-items:center;gap:8px">
+            <label style="width:76px;color:#546e7a">${label}${unit ? `<span class="tip">(${unit})</span>` : ''}</label>
+            <input type="number" step="any" id="f_${k}_min" placeholder="最小" style="width:70px;padding:5px 6px;border:1px solid #cfd8dc;border-radius:4px">
+            <span style="color:#90a4ae">~</span>
+            <input type="number" step="any" id="f_${k}_max" placeholder="最大" style="width:70px;padding:5px 6px;border:1px solid #cfd8dc;border-radius:4px">
+        </div>`);
+    });
+})();
+
+function resetFilters() {
+    $('#f_industry').val('');
+    NUM_COLS.forEach(([k]) => { $(`#f_${k}_min`).val(''); $(`#f_${k}_max`).val(''); });
+    if (scData) renderTable();
+}
+
+function pctCell(p) {
+    return p == null ? '--' : `<span class="${p >= 0 ? 'rise' : 'fall'}">${p >= 0 ? '+' : ''}${p.toFixed(2)}%</span>`;
+}
+function chgCell(c) {
+    return c == null ? '--' : `<span class="${c >= 0 ? 'rise' : 'fall'}">${c >= 0 ? '+' : ''}${c.toFixed(2)}</span>`;
+}
+function num(v, digits = 2) {
+    return v == null ? '--' : v.toFixed(digits);
+}
+
+let scPage = 1;   // 服务端分页页码
+
+function doScreen(resetPage = true) {
+    $('#scHint').text('筛选中...');
+    if (resetPage) scPage = 1;   // 新筛选重置页码；翻页调用 doScreen(false)
+    const params = new URLSearchParams();
+    params.set('page', scPage);
+    params.set('page_size', 50);
+    const ind = $('#f_industry').val();
+    if (ind) params.set('industry', ind);
+    NUM_COLS.forEach(([k]) => {
+        const lo = $(`#f_${k}_min`).val(), hi = $(`#f_${k}_max`).val();
+        if (lo !== '') params.set(`${k}_min`, lo);
+        if (hi !== '') params.set(`${k}_max`, hi);
+    });
+    $.getJSON('/api/market/screener?' + params.toString()).done(function(res) {
+        if (res.code !== 0) {
+            $('#scHint').text(''); $('#scTable').html(`<div class="tip" style="color:#e53935">${res.msg}</div>`); return;
+        }
+        scData = res.data;
+        sortKey = null; sortAsc = false;   // 新筛选结果恢复服务端默认顺序（成交额降序）
+        // 首次返回时填充行业下拉（保持已选项）
+        if ($('#f_industry option').length <= 1) {
+            scData.industries.forEach(i => {
+                $('#f_industry').append(`<option value="${i}">${i}</option>`);
+                $('#fw_industry').append(`<option value="${i}">${i}</option>`);
+            });
+        }
+        $('#scMeta').text(`（数据日期 ${scData.trade_date} · 全市场 ${scData.total_market} 只）`);
+        $('#scHint').text('');
+        renderTable();
+    }).fail(function() {
+        $('#scHint').text(''); $('#scTable').html('<div class="tip" style="color:#e53935">加载失败，请重试</div>');
+    });
+}
+
+function sortedRows() {
+    /* sortKey 为空 = 未排序，保持服务端顺序（成交额降序） */
+    if (!sortKey) return scData.rows;
+    /* 后端字段均为数值类型（null=缺失），数值比较即可，无需解析单位 */
+    return [...scData.rows].sort((a, b) => {
+        const va = a[sortKey] == null ? -Infinity : a[sortKey];
+        const vb = b[sortKey] == null ? -Infinity : b[sortKey];
+        return sortAsc ? va - vb : vb - va;
+    });
+}
+
+function renderTable() {
+    if (!scData) return;
+    $('#scCount').text(`符合条件的共 ${scData.total} 只（第 ${scData.page}/${scData.pages} 页）`);
+    const cols = [
+        ['code', '代码', 'left'], ['name', '名称', 'left'], ['industry', '行业', 'left'],
+        ['close', '现价', 'right'], ['chg', '涨跌额', 'right'], ['pct', '涨跌幅', 'right'],
+        ['mv', '市值(亿)', 'right'], ['pe', 'PE(TTM)', 'right'], ['pb', 'PB', 'right'],
+        ['dv', '股息率%', 'right'], ['vol', '成交量(万手)', 'right'], ['amount', '成交额(亿)', 'right'],
+    ];
+    const head = cols.map(([k, label, align]) => {
+        const sortable = k !== 'code' && k !== 'name' && k !== 'industry';
+        const arrow = sortKey === k ? (sortAsc ? ' ↑' : ' ↓') : '';
+        return `<th ${sortable ? `onclick="setSort('${k}')"` : ''}
+            style="text-align:${align};padding:8px 9px;white-space:nowrap;${sortable ? 'cursor:pointer;user-select:none;' : ''}
+            color:${sortKey === k ? '#1e88e5' : '#90a4ae'};font-weight:normal;border-bottom:2px solid #eceff1">${label}${arrow}</th>`;
+    }).join('');
+    const rows = sortedRows();
+    const body = rows.length ? rows.map(s => `
+        <tr onclick="window.open('/stock_kline/${s.code}')" style="cursor:pointer"
+            onmouseover="this.style.background='#f5f9ff'" onmouseout="this.style.background=''">
+            <td style="padding:8px 9px;border-bottom:1px solid #f5f5f5;white-space:nowrap;color:#78909c">${s.code}</td>
+            <td style="padding:8px 9px;border-bottom:1px solid #f5f5f5;white-space:nowrap;font-weight:500">${s.name}</td>
+            <td style="padding:8px 9px;border-bottom:1px solid #f5f5f5;white-space:nowrap;color:#546e7a">${s.industry}</td>
+            <td style="padding:8px 9px;border-bottom:1px solid #f5f5f5;text-align:right;white-space:nowrap">${num(s.close)}</td>
+            <td style="padding:8px 9px;border-bottom:1px solid #f5f5f5;text-align:right;white-space:nowrap">${chgCell(s.chg)}</td>
+            <td style="padding:8px 9px;border-bottom:1px solid #f5f5f5;text-align:right;white-space:nowrap">${pctCell(s.pct)}</td>
+            <td style="padding:8px 9px;border-bottom:1px solid #f5f5f5;text-align:right;white-space:nowrap">${num(s.mv, 1)}</td>
+            <td style="padding:8px 9px;border-bottom:1px solid #f5f5f5;text-align:right;white-space:nowrap">${num(s.pe, 1)}</td>
+            <td style="padding:8px 9px;border-bottom:1px solid #f5f5f5;text-align:right;white-space:nowrap">${num(s.pb, 2)}</td>
+            <td style="padding:8px 9px;border-bottom:1px solid #f5f5f5;text-align:right;white-space:nowrap">${num(s.dv, 2)}</td>
+            <td style="padding:8px 9px;border-bottom:1px solid #f5f5f5;text-align:right;white-space:nowrap">${num(s.vol, 2)}</td>
+            <td style="padding:8px 9px;border-bottom:1px solid #f5f5f5;text-align:right;white-space:nowrap">${num(s.amount, 2)}</td>
+        </tr>`).join('') : '<tr><td colspan="12" style="padding:24px;text-align:center;color:#90a4ae">没有符合条件的个股，请放宽筛选条件</td></tr>';
+    $('#scTable').html(`<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:15px">
+        <thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>` + renderPager());
+}
+
+/* 服务端分页条（全站统一样式，见 style.css .pager）：页码窗口 ±2 + 首尾折叠 */
+function renderPager() {
+    const {page, pages, total} = scData;
+    if (pages <= 1) return `<div class="pager" style="padding:8px 0 0"><span class="pg-info">共 ${total} 条</span></div>`;
+    const btn = (label, target, opts = {}) =>
+        `<button ${opts.disabled ? 'disabled' : (opts.active ? 'class="active"' : `onclick="goPage(${target})"`)}>${label}</button>`;
+    const nums = [];
+    for (let i = 1; i <= pages; i++) {
+        if (i === 1 || i === pages || Math.abs(i - page) <= 2) nums.push(i);
+        else if (nums[nums.length - 1] !== '…') nums.push('…');
+    }
+    return `<div class="pager"><span class="pg-info">共 ${total} 条</span>`
+        + btn('« 首页', 1, {disabled: page === 1}) + btn('‹', page - 1, {disabled: page === 1})
+        + nums.map(p => p === '…' ? '<span class="pg-ellipsis">…</span>' : btn(p, p, {active: p === page})).join('')
+        + btn('›', page + 1, {disabled: page === pages}) + btn('末页 »', pages, {disabled: page === pages})
+        + '</div>';
+}
+function goPage(p) { scPage = p; doScreen(false); }
+
+function setSort(k) {
+    /* 三态切换：首次点击降序 ↓ → 再点升序 ↑ → 三点取消（恢复默认成交额降序） */
+    if (sortKey === k) {
+        if (!sortAsc) { sortAsc = true; }
+        else { sortKey = null; sortAsc = false; }
+    } else {
+        sortKey = k; sortAsc = false;
+    }
+    renderTable();
+}
+
+$(function() { doScreen(); $('#factorRun').on('click', runFactors); });
+
+/* ================= 多因子打分 ================= */
+function runFactors() {
+    const weights = {
+        pe: parseFloat($('#fw_pe').val()) || 0,
+        pb: parseFloat($('#fw_pb').val()) || 0,
+        dv: parseFloat($('#fw_dv').val()) || 0,
+        pct: parseFloat($('#fw_pct').val()) || 0,
+    };
+    if (weights.pe + weights.pb + weights.dv + weights.pct <= 0) {
+        alert('请至少设置一个因子权重'); return;
+    }
+    const $btn = $('#factorRun').prop('disabled', true).text('打分中...');
+    $('#factorTable').html('<div class="loading">全市场因子计算中，约需数秒...</div>');
+    $.ajax({url: '/api/market/factors', type: 'POST', contentType: 'application/json',
+        data: JSON.stringify({weights: weights, industry: $('#fw_industry').val(), top_n: 50})})
+    .done(function(res) {
+        if (res.code !== 0) { $('#factorTable').html(`<div class="tip" style="color:#e53935">${res.msg}</div>`); return; }
+        renderFactors(res.data);
+    })
+    .fail(function(xhr) { $('#factorTable').html(`<div class="tip" style="color:#e53935">${(xhr.responseJSON && xhr.responseJSON.msg) || '打分失败'}</div>`); })
+    .always(function() { $btn.prop('disabled', false).text('开始打分'); });
+}
+
+function renderFactors(data) {
+    $('#factorMeta').text(`数据日期 ${data.trade_date} · 共 ${data.total} 只参与排名 · 权重：PE ${(data.weights.pe*100).toFixed(0)}% / PB ${(data.weights.pb*100).toFixed(0)}% / 股息 ${(data.weights.dv*100).toFixed(0)}% / 动量 ${(data.weights.pct*100).toFixed(0)}%`);
+    $('#factorTable').html(`<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:14px">
+        <thead><tr style="background:#f5f7f9">
+            <th style="padding:8px 10px;text-align:left">排名</th><th style="padding:8px 10px;text-align:left">股票</th>
+            <th style="padding:8px 10px;text-align:right">综合得分</th><th style="padding:8px 10px;text-align:right">估值PE分</th>
+            <th style="padding:8px 10px;text-align:right">估值PB分</th><th style="padding:8px 10px;text-align:right">股息分</th>
+            <th style="padding:8px 10px;text-align:right">动量分</th><th style="padding:8px 10px;text-align:right">PE</th>
+            <th style="padding:8px 10px;text-align:right">PB</th><th style="padding:8px 10px;text-align:right">股息率</th>
+            <th style="padding:8px 10px;text-align:right">涨跌幅</th><th style="padding:8px 10px;text-align:left">行业</th></tr></thead>
+        <tbody>${data.rows.map((r, i) => `
+            <tr style="cursor:pointer;border-bottom:1px solid #f5f5f5" onclick="window.open('/stock_kline/${r.code}')"
+                onmouseover="this.style.background='#f5f9ff'" onmouseout="this.style.background=''">
+                <td style="padding:8px 10px;font-weight:bold;color:#1e88e5">${i + 1}</td>
+                <td style="padding:8px 10px"><b>${r.name}</b> <span style="color:#78909c;font-size:12px">${r.code}</span></td>
+                <td style="padding:8px 10px;text-align:right;font-weight:bold;color:#e53935">${r.score}</td>
+                <td style="padding:8px 10px;text-align:right">${r.f_pe}</td><td style="padding:8px 10px;text-align:right">${r.f_pb}</td>
+                <td style="padding:8px 10px;text-align:right">${r.f_dv}</td><td style="padding:8px 10px;text-align:right">${r.f_pct}</td>
+                <td style="padding:8px 10px;text-align:right">${r.pe ?? '--'}</td><td style="padding:8px 10px;text-align:right">${r.pb ?? '--'}</td>
+                <td style="padding:8px 10px;text-align:right">${r.dv ?? '--'}%</td><td style="padding:8px 10px;text-align:right">${pctCell(r.pct)}</td>
+                <td style="padding:8px 10px;color:#78909c">${r.industry || '--'}</td></tr>`).join('')}</tbody></table></div>`);
+}
+</script>
+{% endblock %}

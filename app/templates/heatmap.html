@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}行业热力图 - QuantDesk{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="page-title">行业热力图 <span class="tip" id="hmDate"></span>
+        <button type="button" class="btn" style="float:right" onclick="location.reload()">🔄 刷新</button>
+    </div>
+
+    <div class="card" style="margin-bottom:14px;display:flex;gap:24px;flex-wrap:wrap" id="hmSummary">
+        <span class="loading">热力图加载中，全市场数据约需几秒钟...</span>
+    </div>
+
+    <div class="card">
+        <h3>行业涨跌幅热力图
+            <span class="tip" style="display:inline">（块大小 = 成交额，颜色 = 平均涨跌幅，红涨绿跌；点击行业块查看该行业全部个股）</span>
+        </h3>
+        <div style="margin-bottom:8px">
+            <label style="cursor:pointer"><input type="radio" name="hmMode" value="industry" checked onchange="renderHeatmap()"> 行业视图</label>
+            &nbsp;&nbsp;
+            <label style="cursor:pointer"><input type="radio" name="hmMode" value="stock" onchange="renderHeatmap()"> 个股视图（每行业成交额Top8）</label>
+        </div>
+        <div id="heatmapChart" style="height:620px"></div>
+    </div>
+</div>
+
+<script>
+let hmChart = null;
+let hmData = null;   // {trade_date, industries, summary}
+
+/* 涨跌幅 → 颜色（中国惯例：红涨绿跌） */
+function pctColor(p) {
+    const clamp = Math.max(-6, Math.min(6, p));
+    const t = clamp / 6;                      // -1 ~ 1
+    if (t >= 0) {                             // 红：越涨越深
+        const a = 0.25 + 0.75 * t;
+        return `rgba(229,57,53,${a.toFixed(2)})`;
+    }
+    const a = 0.25 + 0.75 * (-t);             // 绿：越跌越深
+    return `rgba(46,125,50,${a.toFixed(2)})`;
+}
+
+function loadHeatmap() {
+    $.getJSON('/api/market/heatmap').done(function(res) {
+        if (res.code !== 0) {
+            $('#hmSummary').html(`<span style="color:#e53935">${res.msg}</span>`);
+            return;
+        }
+        hmData = res.data;
+        $('#hmDate').text(`（数据日期 ${hmData.trade_date}）`);
+        const s = hmData.summary;
+        $('#hmSummary').html(`
+            <div><b>${s.industry_total}</b> 个行业 · <b>${s.stock_total}</b> 只个股</div>
+            <div style="color:#e53935">上涨行业 <b>${s.industry_up}</b></div>
+            <div style="color:#2e7d32">下跌行业 <b>${s.industry_down}</b></div>
+            <div>🔥 最强行业：<b style="color:#e53935">${s.top_industry}</b></div>
+            <div>🧊 最弱行业：<b style="color:#2e7d32">${s.bottom_industry}</b></div>`);
+        renderHeatmap();
+    }).fail(function() {
+        $('#hmSummary').html('<span style="color:#e53935">热力图加载失败，请刷新重试</span>');
+    });
+}
+
+function renderHeatmap() {
+    if (!hmData) return;
+    const mode = $('input[name=hmMode]:checked').val();
+    const tree = hmData.industries.map(ind => {
+        if (mode === 'stock') {
+            return {
+                name: ind.name,
+                value: ind.value,
+                children: ind.top_stocks.map(s => ({
+                    name: s.name, value: [Math.max(s.amount, 0.5), s.pct],
+                    code: s.code, close: s.close, stockPct: s.pct,
+                })),
+            };
+        }
+        return {name: ind.name, value: ind.value, stockCount: ind.stock_count};
+    });
+
+    hmChart = hmChart || echarts.init($('#heatmapChart')[0]);
+    const option = {
+        tooltip: {
+            formatter: function(info) {
+                const v = info.value || [];
+                const pct = (v[1] || 0).toFixed(2);
+                if (info.data.code) {  // 个股节点
+                    return `<b>${info.name}</b>（${info.data.code}）<br>
+                            现价：${info.data.close} 元<br>
+                            涨跌幅：<span style="color:${pctColor(v[1])};font-weight:bold">${v[1] >= 0 ? '+' : ''}${pct}%</span><br>
+                            <span style="color:#90a4ae">点击查看K线 →</span>`;
+                }
+                const ind = hmData.industries.find(i => i.name === info.name);
+                return `<b>${info.name}</b><br>平均涨跌幅：${v[1] >= 0 ? '+' : ''}${pct}%<br>
+                        成交额：${v[0].toFixed(1)} 亿元${ind ? `<br>个股数：${ind.stock_count}` : ''}<br>
+                        <span style="color:#90a4ae">点击查看行业个股 →</span>`;
+            }
+        },
+        series: [{
+            type: 'treemap',
+            roam: false,
+            nodeClick: false,   // 行业视图点击=跳转行业详情页；个股视图点击=跳转个股K线（不再下钻缩放）
+            breadcrumb: {show: true, bottom: 0, itemStyle: {fontSize: 14}},
+            leafDepth: mode === 'stock' ? 1 : 2,
+            upperLabel: {show: mode === 'stock', height: 26, fontSize: 14, color: '#eceff1'},
+            itemStyle: {borderColor: '#fff', borderWidth: 1, gapWidth: 2},
+            label: {
+                show: true, fontSize: 13,
+                formatter: function(p) {
+                    const pct = p.value[1] || 0;
+                    if (p.value[0] < 2) return '';   // 太小的块只留色块
+                    return `${p.name}\n${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
+                }
+            },
+            data: tree.map(d => ({...d, itemStyle: {color: pctColor(d.value[1])},
+                                  children: (d.children || []).map(c => ({
+                                      ...c, itemStyle: {color: pctColor(c.stockPct)}}))})),
+        }],
+        // 点击个股节点跳转K线页
+    };
+    hmChart.setOption(option, true);
+    hmChart.off('click');
+    // 行业视图：点击行业块 → 行业详情页（该行业全部个股）；个股视图：点击 → 个股K线
+    hmChart.on('click', function(p) {
+        if (p.data && p.data.code) window.open('/stock_kline/' + p.data.code, '_self');
+        else if (mode === 'industry' && p.name) window.open('/industry/' + encodeURIComponent(p.name), '_self');
+    });
+}
+
+$(function() { loadHeatmap(); });
+</script>
+{% endblock %}
